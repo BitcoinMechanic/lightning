@@ -58,6 +58,16 @@ def run_timeout(lab, backend, alice, bob, funding, mine, active_nodes, rpc,
         return
     lab.stop(bob['proc'])
     active_nodes.remove(bob)
+    recover_timeout(backend, alice, bob, funding, expiry, delay, mine, rpc, confirmed_outputs)
+
+
+def recover_timeout(backend, alice, bob, funding, expiry, delay, mine, rpc,
+                    confirmed_outputs, amount_sat=100000, standalone=True,
+                    before_timeout=None):
+    """Recover a committed outgoing HTLC with the receiver already offline."""
+    if not 1 <= delay <= 2016:
+        raise AssertionError(f'unexpected CSV delay {delay}')
+    amount_btc = Decimal(amount_sat) / Decimal(100000000)
     close = rpc(alice, 'close', bob['id'], 1)
     if close['type'] != 'unilateral':
         raise AssertionError(close)
@@ -72,10 +82,10 @@ def run_timeout(lab, backend, alice, bob, funding, mine, active_nodes, rpc,
     if len(commitments) != 1:
         raise AssertionError('no unique confirmed commitment')
     commitment = commitments[0]
-    outputs = [o for o in commitment['vout'] if Decimal(str(o['value'])) == Decimal('0.001')
+    outputs = [o for o in commitment['vout'] if Decimal(str(o['value'])) == amount_btc
                and o['scriptPubKey']['type'] == 'witness_v0_scripthash']
     if len(outputs) != 1:
-        raise AssertionError('cannot identify untrimmed 100,000-sat HTLC output')
+        raise AssertionError(f'cannot identify untrimmed {amount_sat}-sat HTLC output')
     outnum = outputs[0]['n']
     height = rpc(backend, 'getblockcount')
     if height >= expiry:
@@ -85,6 +95,8 @@ def run_timeout(lab, backend, alice, bob, funding, mine, active_nodes, rpc,
     if not rpc(backend, 'gettxout', commitment['txid'], outnum, 'false'):
         raise AssertionError('HTLC output spent before expiry')
     print('PASS: commitment confirmed; HTLC output remains unspent before expiry', flush=True)
+    if before_timeout is not None:
+        before_timeout()
     mine(2)
 
     def mempool_spend(txid, index):
@@ -106,7 +118,7 @@ def run_timeout(lab, backend, alice, bob, funding, mine, active_nodes, rpc,
     timeout_height = block['height']
     delayed = [o for o in timeout_tx['vout']
                if o['scriptPubKey']['type'] == 'witness_v0_scripthash'
-               and Decimal('0.0008') < Decimal(str(o['value'])) <= Decimal('0.001')]
+               and amount_btc * Decimal('0.8') < Decimal(str(o['value'])) <= amount_btc]
     if len(delayed) != 1:
         raise AssertionError('cannot identify HTLC timeout delayed output')
     index = delayed[0]['n']
@@ -135,4 +147,6 @@ def run_timeout(lab, backend, alice, bob, funding, mine, active_nodes, rpc,
         if rpc(backend, 'gettxout', txid, n) is not None:
             raise AssertionError('recovered HTLC ancestor remains unspent')
     print('PASS: HTLC refund swept after CSV delay; Alice wallet output confirmed and unspent', flush=True)
-    print('XBT HTLC-timeout test OK (Bob offline; regtest coins only)', flush=True)
+    if standalone:
+        print('XBT HTLC-timeout test OK (Bob offline; regtest coins only)', flush=True)
+    return {'timeout_txid': timeout_tx['txid'], 'refund_sweep_txid': mined[0]['txid']}

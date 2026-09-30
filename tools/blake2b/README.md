@@ -234,7 +234,7 @@ python tools/blake2b/regression.py \
 
 The runner builds nothing and uses the active Python interpreter. It includes
 Python unit tests, native header/parser tests, startup isolation, four funded
-channel scenarios, and all nineteen swap scenarios. Keep the existing CLN and
+channel scenarios, and all twenty swap scenarios. Keep the existing CLN and
 native test binaries built. Default concurrency is one; `--jobs 2` overlaps
 independent cases. Workers share a locked port reservation file. Each live case
 gets its own Knots backends, wallets, CLN nodes, and short data directory.
@@ -277,3 +277,12 @@ HTLC. The original BTC channel stays open. XBT on-chain fees apply, so this
 scenario verifies recovery outputs instead of the four off-chain balance deltas.
 BTC block height remains fixed; cross-chain deadlines and reorg handling are
 not covered. The regression runner includes this as `swap-onchain-preimage`.
+
+For the complementary timeout outcome, use `--onchain-timeout` (regression
+case `swap-onchain-timeout`). The receiver is stopped with XBT held pending;
+the XBT operator force-closes and recovers its HTLC via a confirmed timeout
+transaction and CSV-delayed sweep. A pre-expiry controller invocation must
+still preserve the held BTC payment. Only after CLN reports the original XBT
+attempt definitively failed does controller recovery fail the bound BTC HTLC.
+Both BTC channel balances must return to their initial values. XBT recovery
+incurs on-chain fees. BTC height again remains fixed in this controlled fixture.
