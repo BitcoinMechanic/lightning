@@ -1,4 +1,4 @@
-"""Minimal unsigned BOLT11 fixture for signinvoice; BTC regtest only.
+"""Minimal unsigned BOLT11 invoice for signinvoice; BTC regtest and live pilot.
 
 Defaults to 100,000 sats; no MPP or routing hints. CLN supplies the signature.
 Used by the experimental regtest service, not a general BOLT11 library.
@@ -52,7 +52,10 @@ def byte_words(raw):
     return words
 
 
-def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry=3600):
+def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry=3600,
+                     currency="bcrt", final_cltv=120):
+    if currency not in ('bc', 'bcrt') or type(final_cltv) is not int or not 1 <= final_cltv <= 2016:
+        raise ValueError('unsupported invoice network or CLTV')
     if type(amount_msat) is not int or not 0 < amount_msat <= 2100000000000000000:
         raise ValueError('invalid BTC amount')
     if type(expiry) is not int or not 0 < expiry <= 3600:
@@ -71,10 +74,11 @@ def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry
 
     tag('p', byte_words(raw_hash))
     tag('s', byte_words(raw_secret))
-    tag('d', byte_words(b'Regtest swap: pay BTC, receive XBT'))
+    tag('d', byte_words(b'Regtest swap: pay BTC, receive XBT' if currency == 'bcrt'
+                        else b'Experimental swap: pay BTC, receive XBT'))
     tag('x', uint_words(expiry))
-    tag('c', uint_words(120))
+    tag('c', uint_words(final_cltv))
     # Required variable-length onion and payment-secret features; no MPP.
     tag('9', uint_words((1 << 8) | (1 << 14)))
-    hrp = 'lnbcrt1m' if amount_msat == 100000000 else 'lnbcrt' + str(amount_msat * 10) + 'p'
+    hrp = 'ln' + currency + ('1m' if amount_msat == 100000000 else str(amount_msat * 10) + 'p')
     return encode(hrp, words + [0] * 104)

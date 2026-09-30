@@ -157,3 +157,15 @@ This exercises publication, payment waiting, automatic settlement, status,
 and terminal restart with one original XBT attempt. It uses a 123,000-sat BTC
 price to exercise variable quote amounts. The regression catalog includes
 `swap-service-demo` and `unit-swap-service`.
+
+## Held quote recovery after expiry
+
+Quote expiry and relative CLTV admission limits apply to new HTLCs only. An
+already-held HTLC is restored after restart only when its immutable fields
+match the snapshot persisted at acceptance. Recovery does not rewrite that
+snapshot or cancel BTC merely because the quote expired or blocks advanced.
+
+Legacy held records without an acceptance snapshot, or inconsistent replays,
+remain unresolved and are not exposed as releasable hooks. They require local
+inspection; never delete state or fail BTC while XBT may still settle. Start
+fresh regtest cases after applying this update. This does not enable live swaps.

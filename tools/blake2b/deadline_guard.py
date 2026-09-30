@@ -1,9 +1,11 @@
-"""Opt-in BTC regtest close policy, run during pending reconciliation.
+"""Opt-in BTC close policy, run during pending reconciliation.
 
-Thirty BTC blocks is a fixture threshold, not a cross-chain safety guarantee.
+Regtest uses 30 BTC blocks; the live pilot uses 72. Neither threshold is a
+cross-chain safety guarantee.
 The caller holds the controller lock. No payment is failed or resent here.
 """
 
+import live_pilot as pilot
 
 def protect(path, state, rpc, save):
     if not state.get('btc_deadline_guard'):
@@ -16,15 +18,18 @@ def protect(path, state, rpc, save):
             or status['phase'] != 'held'):
         raise RuntimeError('deadline quote binding or phase mismatch')
     info = rpc(cli, 'getinfo')
-    if info['network'] != 'regtest':
-        raise RuntimeError('deadline guard is regtest only')
+    live = pilot.is_live(state)
+    if live:
+        pilot.verify_state(state, rpc)
+    if info['network'] != ('bitcoin' if live else 'regtest'):
+        raise RuntimeError('deadline network mismatch')
     channels = rpc(cli, 'listpeerchannels')['channels']
     intent = state.get('btc_close_intent')
     if intent is None:
         spend = rpc(cli, 'xbt-spend-info', payment_hash)
         if spend['payment_hash'] != payment_hash or spend['binding'] != state['btc_binding']:
             raise RuntimeError('deadline held HTLC binding mismatch')
-        if spend['cltv_expiry'] - info['blockheight'] > 30:
+        if spend['cltv_expiry'] - info['blockheight'] > (pilot.CLOSE_BLOCKS if live else 30):
             return
         matches = [c for c in channels if c.get('short_channel_id') == state['btc_binding'][0]]
         if len(matches) != 1:

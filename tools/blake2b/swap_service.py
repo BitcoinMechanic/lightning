@@ -1,4 +1,4 @@
-"""Single-swap BTC -> XBT regtest service commands; direct XBT channels only."""
+"""Single-swap BTC -> XBT service: regtest by default, explicit bounded live pilot."""
 import argparse
 import fcntl
 import json
@@ -14,6 +14,7 @@ from smoke_regtest import Lab
 from swap_controller import run as reconcile, save
 from swap_invoice import unsigned_invoice
 from swap_watch import watch
+import live_pilot as pilot
 
 
 def emit(value):
@@ -22,9 +23,13 @@ def emit(value):
 
 def config_from(path):
     config = json.loads(path.read_text())
-    if set(config) != {'btc_cli', 'xbt_cli'}:
-        raise ValueError('config needs btc_cli and xbt_cli only')
-    for cli in config.values():
+    if set(config) not in ({'btc_cli', 'xbt_cli'}, {'btc_cli', 'xbt_cli', 'profile'},
+                            {'btc_cli', 'xbt_cli', 'profile', 'previous_state'}):
+        raise ValueError('config needs btc_cli, xbt_cli and optionally profile')
+    pilot.is_live(config)
+    if (config.get('profile') == pilot.PROFILE_V2) != ('previous_state' in config):
+        raise ValueError('v2 requires previous_state; other profiles must omit it')
+    for cli in (config['btc_cli'], config['xbt_cli']):
         if (not isinstance(cli, list) or not cli or
                 any(not isinstance(arg, str) or not arg for arg in cli)
                 or not Path(cli[0]).is_absolute()):
@@ -35,8 +40,9 @@ def config_from(path):
 def identities(config):
     btc = Lab.rpc(config['btc_cli'], 'getinfo')
     xbt = Lab.rpc(config['xbt_cli'], 'getinfo')
-    if btc['network'] != 'regtest' or xbt['network'] != 'xbt-regtest':
-        raise ValueError('requires BTC regtest and XBT regtest operator nodes')
+    networks = ('bitcoin', 'xbt') if pilot.is_live(config) else ('regtest', 'xbt-regtest')
+    if (btc['network'], xbt['network']) != networks:
+        raise ValueError('operator networks do not match explicit profile')
     if btc['id'] == xbt['id']:
         raise ValueError('operator nodes must have distinct identities')
     return [btc['id'], xbt['id']]
@@ -45,13 +51,26 @@ def identities(config):
 def create(config, invoice, btc_sats, directory):
     if type(btc_sats) is not int or not 0 < btc_sats <= 2100000000000000:
         raise ValueError('BTC price must be a positive integer number of sats')
+    live = pilot.is_live(config)
+    btc_amount, xbt_amount = pilot.amounts(config)
+    if live and btc_sats * 1000 != btc_amount:
+        raise ValueError('BTC amount differs from selected pilot profile')
+    replacement = None
+    if config.get('profile') == pilot.PROFILE_V2:
+        replacement = pilot.replacement(config, Lab.rpc)
+        pilot.incoming_preflight(config, replacement[1], Lab.rpc)
     ids = identities(config)
+    if live:
+        pilot.require_reserves(config, Lab.rpc)
     decoded = Lab.rpc(config['xbt_cli'], 'decode', invoice)
     amount = decoded.get('amount_msat')
     if (decoded.get('valid') is not True or decoded.get('type') != 'bolt11 invoice'
-            or decoded.get('currency') != 'xbtrt' or not invoice.startswith('lnxbtrt')
+            or decoded.get('currency') != ('xbt' if live else 'xbtrt')
+            or not invoice.startswith('lnxbt' if live else 'lnxbtrt')
             or type(amount) is not int or amount <= 0 or not decoded.get('payment_secret')):
-        raise ValueError('requires a signed, fixed-amount XBT regtest BOLT11 invoice')
+        raise ValueError('requires a signed fixed-amount XBT invoice for the selected profile')
+    if live and amount != xbt_amount:
+        raise ValueError('XBT amount differs from selected pilot profile')
     now = int(time.time())
     # Allow time for submission after the BTC quote expires.
     expires = min(now + 600, decoded['created_at'] + decoded['expiry'] - 60)
@@ -64,6 +83,10 @@ def create(config, invoice, btc_sats, directory):
                 and c.get('short_channel_id') and c.get('spendable_msat', 0) >= amount]
     if len(channels) != 1:
         raise ValueError('requires one usable direct XBT channel to invoice payee')
+    if live:
+        if not channels[0]['peer_connected']:
+            raise ValueError('XBT peer disconnected')
+        pilot.require_untrimmed(channels[0], amount)
     attempts = Lab.rpc(config['xbt_cli'], 'listsendpays')['payments']
     if any(p['payment_hash'] == decoded['payment_hash'] for p in attempts):
         raise ValueError('XBT invoice already has an outgoing attempt')
@@ -71,36 +94,72 @@ def create(config, invoice, btc_sats, directory):
              'btc_amount_msat': btc_sats * 1000, 'xbt_amount_msat': amount,
              'xbt_invoice': invoice, 'expires_at': expires, 'min_cltv_delta': 100,
              'max_cltv_delta': 2000}
+    if live:
+        terms.update(pilot=config['profile'], min_cltv_delta=pilot.MIN_CLTV,
+                     max_cltv_delta=pilot.MAX_CLTV)
+    if replacement:
+        if decoded['payment_hash'] == replacement[0]:
+            raise ValueError('replacement needs a new invoice hash')
+        terms.update(replaces=replacement[0], btc_channel=replacement[1])
     template = dict(config, phase='prepared', quote_gate=True, btc_deadline_guard=True,
                     payment_hash=decoded['payment_hash'], payment_secret=decoded['payment_secret'],
                     xbt_invoice=invoice, xbt_amount_msat=amount,
                     route=[{'id': decoded['payee'], 'channel': channels[0]['short_channel_id'],
                             'amount_msat': amount, 'delay': 40}])
+    if live:
+        template.update(node_ids=ids, btc_amount_msat=btc_amount)
+        if replacement:
+            template.update(btc_channel=replacement[1])
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     # Save everything needed to retry registration/signing before any mutation.
     save(directory / 'quote.json', {'config': config, 'node_ids': ids, 'terms': terms,
                                     'controller': template})
 
 
-def publish(directory):
+def publication_preflight(data):
+    terms = data['terms']
+    if data['config'].get('profile') == pilot.PROFILE_V2:
+        previous, channel = pilot.replacement(data['config'], Lab.rpc)
+        if terms.get('replaces') != previous or terms.get('btc_channel') != channel:
+            raise RuntimeError('replacement quote binding mismatch')
+        pilot.incoming_preflight(data['config'], channel, Lab.rpc)
+        pilot.require_reserves(data['config'], Lab.rpc)
+        route = data['controller']['route'][0]
+        channels = [c for c in Lab.rpc(data['config']['xbt_cli'], 'listpeerchannels')['channels']
+                    if c.get('short_channel_id') == route['channel'] and c['peer_id'] == route['id']]
+        if (len(channels) != 1 or channels[0]['state'] != 'CHANNELD_NORMAL'
+                or not channels[0]['peer_connected']
+                or channels[0]['spendable_msat'] < terms['xbt_amount_msat']):
+            raise RuntimeError('XBT channel not ready for publication')
+        pilot.require_untrimmed(channels[0], terms['xbt_amount_msat'])
+
+
+def publish(directory, renewing=False):
     path = directory / 'quote.json'
     data = json.loads(path.read_text())
     if identities(data['config']) != data['node_ids']:
         raise RuntimeError('configured operator identity changed')
+    if data.get('renewal') and not data['renewal'].get('complete') and not renewing:
+        raise RuntimeError('finish pending renewal with the renew command')
     terms = data['terms']
+    live = pilot.is_live(data['config'])
     if terms['expires_at'] <= int(time.time()):
         raise RuntimeError('quote expired')
     if 'btc_invoice' not in data:
+        publication_preflight(data)
         cli = data['config']['btc_cli']
         if Lab.rpc(cli, 'xbt-register', json.dumps(terms)) != {'registered': True}:
             raise RuntimeError('quote registration failed')
         unsigned = unsigned_invoice(terms['payment_hash'], terms['payment_secret'],
-                                    terms['btc_amount_msat'], terms['expires_at'] - int(time.time()))
+                                    terms['btc_amount_msat'], terms['expires_at'] - int(time.time()),
+                                    currency='bc' if live else 'bcrt',
+                                    final_cltv=pilot.INVOICE_CLTV if live else 120)
         signed = Lab.rpc(cli, 'signinvoice', unsigned)['bolt11']
         decoded = Lab.rpc(cli, 'decode', signed)
-        expected = {'valid': True, 'currency': 'bcrt', 'payee': data['node_ids'][0],
+        expected = {'valid': True, 'currency': 'bc' if live else 'bcrt', 'payee': data['node_ids'][0],
                     'payment_hash': terms['payment_hash'], 'payment_secret': terms['payment_secret'],
-                    'amount_msat': terms['btc_amount_msat'], 'min_final_cltv_expiry': 120}
+                    'amount_msat': terms['btc_amount_msat'],
+                    'min_final_cltv_expiry': pilot.INVOICE_CLTV if live else 120}
         if any(decoded.get(k) != v for k, v in expected.items()):
             raise RuntimeError('signed BTC invoice does not match quote')
         data['btc_invoice'] = signed
@@ -110,8 +169,65 @@ def publish(directory):
             'xbt_msat': terms['xbt_amount_msat'], 'expires_at': terms['expires_at']}
 
 
+def renew(directory):
+    path = directory / 'quote.json'
+    data = json.loads(path.read_text())
+    if data['config'].get('profile') != pilot.PROFILE_V2:
+        raise RuntimeError('renewal is only for the unused v2 quote')
+    if (directory / 'state.json').exists():
+        raise RuntimeError('controller state exists; renewal refused')
+    if identities(data['config']) != data['node_ids']:
+        raise RuntimeError('configured operator identity changed')
+    if data.get('renewal', {}).get('complete'):
+        return publish(directory)  # Reprint only; never extend twice.
+    terms = data['terms']
+    cli = data['config']['btc_cli']
+    status = Lab.rpc(cli, 'xbt-quote-status', terms['payment_hash'])
+    if (status['payment_hash'] != terms['payment_hash'] or status['phase'] != 'quoted'
+            or status.get('binding') is not None):
+        raise RuntimeError('quote was accepted or resolved; renewal refused')
+    outgoing = Lab.rpc(data['config']['xbt_cli'], 'listsendpays')['payments']
+    if any(p['payment_hash'] == terms['payment_hash'] for p in outgoing):
+        raise RuntimeError('XBT attempt exists; renewal refused')
+    publication_preflight(data)
+    decoded = Lab.rpc(data['config']['xbt_cli'], 'decode', terms['xbt_invoice'])
+    expected = {'valid': True, 'currency': 'xbt', 'payment_hash': terms['payment_hash'],
+                'amount_msat': terms['xbt_amount_msat'],
+                'payee': data['controller']['route'][0]['id'],
+                'payment_secret': data['controller']['payment_secret']}
+    if any(decoded.get(k) != v for k, v in expected.items()):
+        raise RuntimeError('original XBT invoice mismatch')
+    now = int(time.time())
+    if 'renewal' not in data:
+        if terms['expires_at'] > now or 'btc_invoice' not in data:
+            raise RuntimeError('renewal requires an expired published quote')
+        expires = min(now + 600, decoded['created_at'] + decoded['expiry'] - 60)
+        if expires < now + 30:
+            raise RuntimeError('original XBT invoice has insufficient time remaining')
+        data['renewal'] = {'old_terms': dict(terms), 'old_btc_invoice': data['btc_invoice'],
+                           'new_expiry': expires, 'complete': False}
+        save(path, data)  # Journal before a potentially interrupted gate RPC.
+    journal = data['renewal']
+    if (journal['new_expiry'] <= now
+            or journal['new_expiry'] > decoded['created_at'] + decoded['expiry'] - 60):
+        raise RuntimeError('renewal window expired; preserve state for inspection')
+    result = Lab.rpc(cli, 'xbt-renew', json.dumps(journal['old_terms']), journal['new_expiry'])
+    if result != {'renewed': True}:
+        raise RuntimeError('unexpected gate renewal response')
+    data['terms'] = dict(journal['old_terms'], expires_at=journal['new_expiry'])
+    data.pop('btc_invoice', None)
+    save(path, data)
+    report = publish(directory, renewing=True)
+    data = json.loads(path.read_text())
+    data['renewal']['complete'] = True
+    save(path, data)
+    return report
+
+
 def serve(directory, stop):
     data = json.loads((directory / 'quote.json').read_text())
+    if data.get('renewal') and not data['renewal'].get('complete'):
+        raise RuntimeError('finish pending renewal before running the service')
     if identities(data['config']) != data['node_ids']:
         raise RuntimeError('configured operator identity changed')
     if 'btc_invoice' not in data:
@@ -175,7 +291,7 @@ def status(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('quote', 'invoice', 'run', 'status'):
+    for name in ('quote', 'invoice', 'renew', 'run', 'status'):
         command = commands.add_parser(name)
         command.add_argument('--directory', required=True, type=Path)
         if name == 'quote':
@@ -197,6 +313,9 @@ def main():
         fd = os.open(directory / 'service.lock', os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.command == 'renew':
+                emit(renew(directory))
+                return 0
             if args.command in ('quote', 'invoice'):
                 emit(publish(directory))
                 return 0

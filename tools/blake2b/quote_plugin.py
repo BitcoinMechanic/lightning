@@ -1,7 +1,7 @@
-"""Experimental single-part BTC-regtest quote gate. No automatic XBT spending.
+"""Experimental single-part quote gate. No automatic XBT spending.
 
 The controller registers trusted quotes and resolves them after XBT settlement.
-State lives beside this copied plugin in the disposable test directory.
+State lives beside this copied plugin. Regtest is the default; live is opt-in.
 """
 import hashlib
 import hmac
@@ -31,6 +31,8 @@ def validation_error(quote, htlc, onion, now):
     # Return fixed labels only: never log secrets, preimages or onion payloads.
     checks = (
         (quote['expires_at'] > now, 'quote expired'),
+        ('btc_channel' not in quote or htlc.get('short_channel_id') == quote['btc_channel'],
+         'incoming channel differs from quote'),
         (htlc['payment_hash'] == quote['payment_hash'], 'payment hash mismatch'),
         (hmac.compare_digest(onion.get('payment_secret', ''), quote['payment_secret']),
          'payment secret mismatch'),
@@ -64,6 +66,19 @@ def validate(quote, htlc, onion, now):
     return validation_error(quote, htlc, onion, now) is None
 
 
+def replay_identity(htlc, onion):
+    """Immutable accepted fields; relative CLTV changes as blocks arrive."""
+    if not isinstance(htlc, dict) or not isinstance(onion, dict):
+        return None
+    return {
+        'htlc': {key: htlc.get(key) for key in
+                 ('short_channel_id', 'id', 'payment_hash', 'amount_msat', 'cltv_expiry')},
+        'onion': {key: onion.get(key) for key in
+                  ('payment_secret', 'forward_msat', 'total_msat', 'type',
+                   'outgoing_cltv_value', 'short_channel_id', 'next_node_id')},
+    }
+
+
 def log_rejection(reason):
     print(json.dumps({'jsonrpc': '2.0', 'method': 'log',
                       'params': {'level': 'warn', 'message': 'Quote gate rejected HTLC: ' + reason}}),
@@ -80,14 +95,19 @@ def main():
     quotes = json.loads(path.read_text()) if path.exists() else {}
     pending = {}
     active = False
+    live = False
+    live_profile = None
     for line in sys.stdin:
         if not line.strip():
             continue
         request = json.loads(line)
         method, params = request['method'], request.get('params', {})
         if method == 'getmanifest':
-            reply(request, {'options': [], 'rpcmethods': [
+            reply(request, {'options': [{'name': 'xbt-live-pilot', 'type': 'string',
+                'default': 'disabled', 'description': 'Explicit bounded live pilot opt-in'}], 'rpcmethods': [
                 {'name': 'xbt-register', 'usage': 'quote', 'description': 'Register immutable test swap terms'},
+                {'name': 'xbt-renew', 'usage': 'quote expiry', 'description': 'Renew an unused expired v2 quote once'},
+                {'name': 'xbt-pilot-info', 'usage': '', 'description': 'Read active profile and saved quote count'},
                 {'name': 'xbt-held', 'usage': '', 'description': 'List validated held HTLCs'},
                 {'name': 'xbt-quote-status', 'usage': 'payment_hash', 'description': 'Read durable quote phase and binding'},
                 {'name': 'xbt-spend-info', 'usage': 'payment_hash', 'description': 'Read bound HTLC expiry and quote limits before spending'},
@@ -97,19 +117,46 @@ def main():
                 'dynamic': True, 'nonnumericids': True})
             continue
         if method == 'init':
-            active = params['configuration']['network'] == 'regtest'
-            reply(request, {} if active else {'disable': 'BTC regtest only'})
+            network = params['configuration']['network']
+            live_profile = params.get('options', {}).get('xbt-live-pilot')
+            live = network == 'bitcoin' and live_profile in ('live-pilot-v1', 'live-pilot-v2')
+            active = network == 'regtest' or live
+            reply(request, {} if active else {'disable': 'requires regtest or explicit live pilot'})
             continue
         if not active:
-            raise RuntimeError('quote gate not initialized for BTC regtest')
+            raise RuntimeError('quote gate not initialized for the selected network')
         try:
             if method == 'xbt-register':
                 quote = params[0] if isinstance(params, list) else params['quote']
                 required = {'payment_hash', 'payment_secret', 'btc_amount_msat',
                             'xbt_amount_msat', 'xbt_invoice', 'expires_at',
                             'min_cltv_delta', 'max_cltv_delta'}
+                if live:
+                    required.add('pilot')
+                    if quote.get('pilot') == 'live-pilot-v2':
+                        required.update(('replaces', 'btc_channel'))
                 if set(quote) != required:
                     raise ValueError('unexpected quote fields')
+                if live:
+                    limits = {'live-pilot-v1': (1000000, 2000000),
+                              'live-pilot-v2': (2000000, 4000000)}
+                    if (quote['pilot'] not in limits
+                            or (quote['btc_amount_msat'], quote['xbt_amount_msat']) != limits[quote['pilot']]
+                            or quote['min_cltv_delta'] != 288 or quote['max_cltv_delta'] != 2016):
+                        raise ValueError('live pilot limits mismatch')
+                    if quote['payment_hash'] not in quotes:
+                        if quote['pilot'] != live_profile:
+                            raise ValueError('new quote profile differs from enabled pilot')
+                        if quote['pilot'] == 'live-pilot-v2':
+                            previous = quotes.get(quote['replaces'])
+                            if (len(quotes) != 1 or previous is None
+                                    or previous['phase'] != 'failed' or 'preimage' in previous
+                                    or previous['terms'].get('pilot') != 'live-pilot-v1'
+                                    or not previous.get('binding')
+                                    or quote['btc_channel'] != previous['binding'][0]):
+                                raise ValueError('replacement requires the sole failed v1 quote on its original channel')
+                        elif quotes:
+                            raise ValueError('live pilot permits one quote only; retain original state')
                 for key in ('payment_hash', 'payment_secret'):
                     if len(bytes.fromhex(quote[key])) != 32 or quote[key] != quote[key].lower():
                         raise ValueError('invalid hash or secret')
@@ -119,8 +166,9 @@ def main():
                         raise ValueError('invalid quote integer')
                 if (quote['expires_at'] <= int(time.time())
                         or quote['min_cltv_delta'] > quote['max_cltv_delta']
-                        or not quote['xbt_invoice'].startswith('lnxbtrt')):
-                    raise ValueError('invalid expiry or XBT test invoice')
+                        or not quote['xbt_invoice'].startswith('lnxbt' if live else 'lnxbtrt')
+                        or (live and quote['xbt_invoice'].startswith('lnxbtrt'))):
+                    raise ValueError('invalid expiry or XBT invoice')
                 if quote['payment_hash'] in quotes:
                     if quotes[quote['payment_hash']]['terms'] != quote:
                         raise ValueError('quote already registered with different terms')
@@ -129,18 +177,55 @@ def main():
                 quotes[quote['payment_hash']] = {'terms': quote, 'phase': 'quoted'}
                 save(path, quotes)
                 reply(request, {'registered': True})
+            elif method == 'xbt-renew':
+                old = params[0] if isinstance(params, list) else params['quote']
+                expiry = params[1] if isinstance(params, list) else params['expiry']
+                entry = quotes.get(old['payment_hash'])
+                if (not live or live_profile != 'live-pilot-v2' or entry is None
+                        or old.get('pilot') != 'live-pilot-v2'
+                        or entry['phase'] != 'quoted' or 'binding' in entry
+                        or 'accepted' in entry or 'preimage' in entry
+                        or old['payment_hash'] in pending):
+                    raise ValueError('renewal requires a never-accepted live v2 quote')
+                renewed = dict(old, expires_at=expiry)
+                history = {'old_terms': old, 'new_expiry': expiry}
+                if entry.get('renewal') == history and entry['terms'] == renewed:
+                    reply(request, {'renewed': True})
+                    continue  # Lost RPC reply: exact retry, not another extension.
+                if (entry.get('renewal') is not None or entry['terms'] != old
+                        or type(expiry) is not int or old['expires_at'] > int(time.time())
+                        or not int(time.time()) < expiry <= int(time.time()) + 600):
+                    raise ValueError('invalid or already-used quote renewal')
+                entry.update(terms=renewed, renewal=history)
+                save(path, quotes)
+                reply(request, {'renewed': True})
             elif method == 'htlc_accepted':
                 htlc, onion = params['htlc'], params['onion']
                 entry = quotes.get(htlc['payment_hash'])
+                if live and entry is None:
+                    reply(request, {'result': 'continue'})
+                    continue
                 binding = [htlc['short_channel_id'], htlc['id']]
                 if entry and entry.get('binding') == binding and entry['phase'] == 'resolved':
                     reply(request, {'result': 'resolve', 'payment_key': entry['preimage']})
                 elif entry and entry.get('binding') == binding and entry['phase'] == 'failed':
                     reply(request, {'result': 'fail', 'failure_message': '2002'})
-                elif (entry and entry['phase'] in ('quoted', 'held')
+                elif entry and entry.get('binding') == binding and entry['phase'] == 'held':
+                    # Admission expiry cannot cancel an accepted swap: XBT may
+                    # already be pending or settled. Restore only the exact
+                    # persisted hook; never run fresh-admission CLTV checks.
+                    if (entry.get('accepted') is not None
+                            and entry['accepted'] == replay_identity(htlc, onion)):
+                        pending[htlc['payment_hash']] = request
+                    else:
+                        # Old checkpoints lack this snapshot. Do not fail BTC
+                        # or expose a releasable hook on uncertain identity.
+                        log_rejection('held replay needs inspection; BTC remains unresolved')
+                elif (entry and entry['phase'] == 'quoted'
                       and entry.get('binding', binding) == binding
                       and validate(entry['terms'], htlc, onion, int(time.time()))):
-                    entry.update(phase='held', binding=binding)
+                    entry.update(phase='held', binding=binding,
+                                 accepted=replay_identity(htlc, onion))
                     save(path, quotes)
                     pending[htlc['payment_hash']] = request
                     # Only validated and durably bound HTLCs become visible.
@@ -149,6 +234,9 @@ def main():
                               if entry else 'unknown quote')
                     log_rejection(reason or 'quote phase or HTLC binding mismatch')
                     reply(request, {'result': 'fail', 'failure_message': '2002'})
+            elif method == 'xbt-pilot-info':
+                reply(request, {'profile': live_profile if live else 'regtest',
+                                'registered_quotes': len(quotes)})
             elif method == 'xbt-held':
                 reply(request, {'held': [r['params']['htlc'] for r in pending.values()]})
             elif method == 'xbt-quote-status':
@@ -173,7 +261,10 @@ def main():
                                 'max_cltv_delta': terms['max_cltv_delta'],
                                 'expires_at': terms['expires_at'],
                                 'xbt_invoice': terms['xbt_invoice'],
-                                'xbt_amount_msat': terms['xbt_amount_msat']})
+                                'xbt_amount_msat': terms['xbt_amount_msat'],
+                                'btc_amount_msat': terms['btc_amount_msat'],
+                                'pilot': terms.get('pilot'),
+                                'btc_channel': terms.get('btc_channel')})
             elif method == 'xbt-fail':
                 payment_hash = params[0] if isinstance(params, list) else params['payment_hash']
                 binding = params[1] if isinstance(params, list) else params['binding']

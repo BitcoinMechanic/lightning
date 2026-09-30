@@ -5,13 +5,32 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from regression import Case, Runner, cases
 from smoke_regtest import Lab, wait_until
 
 
 class RunnerTests(unittest.TestCase):
+    def test_lightning_waits_for_peer_listener_after_rpc_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Lab(Path(directory), '/bitcoind', '/bitcoin-cli')
+            process = MagicMock()
+            process.poll.return_value = None
+            connection = MagicMock()
+            with patch.object(lab, 'port', return_value=19735), \
+                    patch.object(lab, 'start', return_value=process), \
+                    patch.object(lab, 'rpc', return_value={'network': 'regtest', 'id': 'test'}) as rpc, \
+                    patch('smoke_regtest.socket.create_connection',
+                          side_effect=[ConnectionRefusedError(), connection]) as connect, \
+                    patch('smoke_regtest.time.sleep'):
+                node = lab.lightning('btc', 'regtest', {'data': '/backend', 'port': 18443})
+            self.assertEqual(node['id'], 'test')
+            self.assertEqual(rpc.call_count, 1)
+            self.assertEqual(connect.call_count, 2)
+            connect.assert_called_with(('127.0.0.1', 19735), timeout=1)
+            connection.__exit__.assert_called_once()
+
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))

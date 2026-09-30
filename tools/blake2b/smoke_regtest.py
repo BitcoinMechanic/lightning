@@ -140,6 +140,15 @@ class Lab:
             info = wait_until(lambda: self.rpc(cli, 'getinfo'), proc)
             if info['network'] != network:
                 raise AssertionError(info)
+            # The RPC socket can answer before connectd activates its listener.
+            # A refused TCP connection is not evidence of chain isolation.
+            def listener_ready():
+                try:
+                    with socket.create_connection(('127.0.0.1', port), timeout=1):
+                        return True
+                except (ConnectionRefusedError, TimeoutError):
+                    return False
+            wait_until(listener_ready, proc)
             return {'data': data, 'port': port, 'proc': proc, 'cli': cli,
                     'id': info['id'], 'log': logfile}
         # Failure must be a clean refusal, not a crash or indefinite startup.

@@ -17,6 +17,7 @@ import time
 
 from smoke_regtest import Lab, wait_until
 from deadline_guard import protect
+import live_pilot as pilot
 
 
 def save(path, state):
@@ -40,6 +41,16 @@ def check_spend(state):
             or info['binding'] != state['btc_binding']
             or info['xbt_amount_msat'] != state['xbt_amount_msat']):
         raise RuntimeError('spend quote identity or amount mismatch')
+    if pilot.is_live(state):
+        if (info.get('pilot') != state['profile'] or info.get('btc_amount_msat') != pilot.amounts(state)[0]
+                or info['min_cltv_delta'] != pilot.MIN_CLTV
+                or info['max_cltv_delta'] != pilot.MAX_CLTV):
+            raise RuntimeError('live quote policy mismatch')
+        if (state['profile'] == pilot.PROFILE_V2
+                and info.get('btc_channel') != state.get('btc_channel')):
+            raise RuntimeError('live quote incoming channel mismatch')
+        pilot.require_reserves(state, Lab.rpc)
+        pilot.check_channels(state, Lab.rpc)
     height = Lab.rpc(state['btc_cli'], 'getinfo')['blockheight']
     if info['expires_at'] <= int(time.time()):
         return 'quote_expired'
@@ -52,7 +63,7 @@ def check_spend(state):
         return 'quoted_invoice_mismatch'
     decoded = Lab.rpc(state['xbt_cli'], 'decode', info['xbt_invoice'])
     if (decoded.get('valid') is not True or decoded.get('type') != 'bolt11 invoice'
-            or decoded.get('currency') != 'xbtrt'
+            or decoded.get('currency') != ('xbt' if pilot.is_live(state) else 'xbtrt')
             or decoded.get('payment_hash') != state['payment_hash']
             or decoded.get('payment_secret') != state['payment_secret']
             or decoded.get('amount_msat') != state['xbt_amount_msat']):
@@ -92,6 +103,7 @@ def run(path, crash_after_xbt=False, crash_after_btc=False, crash_after_sendpay=
 def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_sendpay=False,
                wait_pending=False):
     state = json.loads(path.read_text())
+    pilot.verify_state(state, Lab.rpc)
     payment_hash = state['payment_hash']
     if state['phase'] == 'prepared':
         if state.get('quote_gate'):
