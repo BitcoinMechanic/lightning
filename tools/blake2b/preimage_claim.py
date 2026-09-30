@@ -6,9 +6,12 @@ from smoke_regtest import wait_until
 
 
 def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
-              mine, rpc, confirmed_outputs, amount_sat=100000, standalone=True):
+              mine, rpc, confirmed_outputs, amount_sat=100000, standalone=True,
+              release=None):
     amount_btc = Decimal(amount_sat) / Decimal(100000000)
-    if hashlib.sha256(bytes.fromhex(preimage)).hexdigest() != invoice['payment_hash']:
+    if preimage is None and release is None:
+        raise ValueError('claim needs a preimage or a release callback')
+    if preimage is not None and hashlib.sha256(bytes.fromhex(preimage)).hexdigest() != invoice['payment_hash']:
         raise AssertionError('invoice does not use the chosen preimage')
     delay = rpc(bob, 'listpeerchannels')['channels'][0]['our_to_self_delay']
     if not 1 <= delay <= 2016:
@@ -39,9 +42,16 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
     payments = rpc(alice, 'listsendpays', invoice['bolt11'])['payments']
     if len(payments) != 1 or payments[0]['status'] != 'pending':
         raise AssertionError('payment not pending before on-chain preimage reveal')
+    pending_payment = payments[0]
     print('PASS: Bob commitment confirmed with unresolved HTLC; Alice payment still pending', flush=True)
     log_offset = alice['log'].stat().st_size
-    if rpc(bob, 'xbt-release', preimage)['released'] != 1:
+    if release is not None:
+        # Caller learns the secret through its swap controller only after the
+        # unresolved commitment is confirmed, and releases the receiver hook.
+        preimage = release()
+        if hashlib.sha256(bytes.fromhex(preimage)).hexdigest() != invoice['payment_hash']:
+            raise AssertionError('release callback returned the wrong preimage')
+    elif rpc(bob, 'xbt-release', preimage)['released'] != 1:
         raise AssertionError('expected exactly one held HTLC release')
 
     def mempool_spend(txid, index):
@@ -60,8 +70,12 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
     vin = next(v for v in success['vin'] if v.get('txid') == commit['txid'] and v.get('vout') == n)
     if preimage not in vin.get('txinwitness', []):
         raise AssertionError('confirmed HTLC witness does not reveal the expected preimage')
-    payment = rpc(alice, 'waitsendpay', invoice['payment_hash'], 10)
-    if payment['status'] != 'complete' or payment['payment_preimage'] != preimage:
+    # Ordinary pay/xpay may use a nonzero part and a random group, whereas
+    # direct sendpay uses part zero. Wait for the exact original attempt.
+    payment = rpc(alice, 'waitsendpay', invoice['payment_hash'], 10,
+                  pending_payment.get('partid', 0), pending_payment['groupid'])
+    if (payment['status'] != 'complete' or payment['payment_preimage'] != preimage
+            or payment['id'] != pending_payment['id']):
         raise AssertionError('Alice did not settle with the on-chain preimage')
 
     def learned_onchain():

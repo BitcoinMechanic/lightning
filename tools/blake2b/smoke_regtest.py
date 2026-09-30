@@ -99,7 +99,13 @@ class Lab:
         args = [self.bitcoind, f'-datadir={data}', '-conf=/dev/null', '-regtest',
                 '-server=1', '-listen=0', '-dnsseed=0', '-discover=0', '-connect=0',
                 '-rpcbind=127.0.0.1', '-rpcallowip=127.0.0.1', f'-rpcport={rpcport}',
-                '-fallbackfee=0.00001']
+                '-fallbackfee=0.00001',
+                # CLN randomly backdates funding locktime by up to 99 blocks.
+                # At low regtest heights this can land on 21, which Knots'
+                # overlay-policy heuristic rejects as parasite-cat21 even for
+                # ordinary channel funding. Disable only this policy family
+                # in the disposable backends, without changing CLN locktimes.
+                '-rejectparasites=0']
         if fork:
             args += ['-testactivationheight=blake2b@1', '-rdtsexpiry=2147483647',
                      '-blake2b_headline=CLN XBT isolated regtest']

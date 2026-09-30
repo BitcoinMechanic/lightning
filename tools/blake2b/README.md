@@ -234,10 +234,16 @@ python tools/blake2b/regression.py \
 
 The runner builds nothing and uses the active Python interpreter. It includes
 Python unit tests, native header/parser tests, startup isolation, four funded
-channel scenarios, and all twenty swap scenarios. Keep the existing CLN and
+channel scenarios, and all twenty-one swap scenarios. Keep the existing CLN and
 native test binaries built. Default concurrency is one; `--jobs 2` overlaps
 independent cases. Workers share a locked port reservation file. Each live case
 gets its own Knots backends, wallets, CLN nodes, and short data directory.
+
+Disposable Knots backends use `-rejectparasites=0`: at these low regtest
+heights, CLN's randomized funding locktime can equal 21 and trigger Knots'
+`parasite-cat21` overlay-policy heuristic on an ordinary channel transaction.
+This prevents a random setup rejection. It does not change CLN's transaction
+construction or the configuration of any node outside the test harness.
 
 The printed `/tmp/cxr-*` directory retains every case log and live node directory,
 plus `summary.json` containing names, exact commands, exit codes, and durations.
@@ -286,3 +292,21 @@ still preserve the held BTC payment. Only after CLN reports the original XBT
 attempt definitively failed does controller recovery fail the bound BTC HTLC.
 Both BTC channel balances must return to their initial values. XBT recovery
 incurs on-chain fees. BTC height again remains fixed in this controlled fixture.
+
+## BTC deadline advancement with XBT pending
+
+Use `swap_regtest.py --onchain-preimage` for XBT-side on-chain settlement, or
+`swap_regtest.py --btc-deadline` for the incoming BTC-side claim (with the same
+`--bitcoind` and `--bitcoin-cli` arguments). The latter starts XBT while the
+incoming BTC margin is valid, then advances only BTC to 30 blocks remaining.
+The harness force-closes the BTC operator's channel and confirms its unresolved
+HTLC before allowing the XBT receiver to resume native invoice settlement.
+The controller recovers XBT's preimage from its completed payment and releases
+the BTC hook; the test verifies a confirmed BTC HTLC-success witness, payer-side
+on-chain preimage extraction, and the operator's CSV-delayed wallet sweep.
+XBT channel balances must match the quote, and repeat recovery must not resend.
+
+This is a controlled recovery scenario with a cooperative XBT receiver after
+BTC closure. The 30-block close point is a fixture choice, not a production
+timelock recommendation or an automatic deadline policy. The regression case
+is `swap-btc-deadline`.

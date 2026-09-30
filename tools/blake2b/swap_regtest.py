@@ -26,11 +26,12 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
         pay_invoice=False, quoted_invoice=False, reject_quotes=False, crash_after_btc=False,
         crash_while_pending=False, pending_failure=False, restart_pending=False,
         kill_pending=False, stale_timelock=False, concurrent=False, outgoing_binding=False,
-        onchain_preimage=False, onchain_timeout=False):
+        onchain_preimage=False, onchain_timeout=False, btc_deadline=False):
     restart_pending = restart_pending or kill_pending
     crash_while_pending = crash_while_pending or pending_failure or restart_pending
     quoted_invoice = quoted_invoice or crash_after_btc or crash_while_pending or stale_timelock or concurrent
     quoted_invoice = quoted_invoice or outgoing_binding or onchain_preimage or onchain_timeout
+    quoted_invoice = quoted_invoice or btc_deadline
     pay_invoice = pay_invoice or quoted_invoice
     btc = lab.node('knots-btc', False)
     xbt = lab.node('knots-xbt', True)
@@ -87,7 +88,7 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
 
     if fail_outgoing:
         rpc(receiver, 'plugin', 'start', plugin)
-    if crash_while_pending or concurrent or onchain_preimage or onchain_timeout:
+    if crash_while_pending or concurrent or onchain_preimage or onchain_timeout or btc_deadline:
         hold = lab.root / 'hold_htlc.py'
         hold.write_text(f'#!{sys.executable}\n' +
                         Path(__file__).with_name('hold_htlc.py').read_text())
@@ -177,6 +178,11 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
     print('PASS: 100,000 BTC sats held under XBT invoice hash; incoming expiry has test margin', flush=True)
 
     recovered_preimage = None
+    if btc_deadline:
+        from btc_deadline import run_deadline
+        run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
+                     btc_invoice, stored['binding'], plugin, initial, pay_process, pay_log)
+        return
     if onchain_preimage or onchain_timeout:
         from onchain_swap import run_onchain
         run_onchain(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
@@ -451,6 +457,8 @@ def main():
                       help='Claim XBT on-chain after receiver force-close, then recover BTC settlement.')
     mode.add_argument('--onchain-timeout', action='store_true',
                       help='Recover XBT via on-chain timeout, then fail BTC after definitive outgoing failure.')
+    mode.add_argument('--btc-deadline', action='store_true',
+                      help='Advance BTC with XBT pending, force-close BTC, then claim with the XBT preimage.')
     parser.add_argument('--work-dir', type=Path, help='New short directory to retain data/logs.')
     args = parser.parse_args()
     temporary = None
@@ -470,7 +478,7 @@ def main():
             args.pending_failure or args.pending_restart_failure or args.pending_kill_failure,
             args.pending_restart or args.pending_restart_failure,
             args.pending_kill or args.pending_kill_failure, args.stale_timelock, args.concurrent,
-            args.outgoing_binding, args.onchain_preimage, args.onchain_timeout)
+            args.outgoing_binding, args.onchain_preimage, args.onchain_timeout, args.btc_deadline)
     except Exception as exc:
         if isinstance(exc, subprocess.CalledProcessError):
             print(f'RPC stdout: {exc.stdout}\nRPC stderr: {exc.stderr}', flush=True)
