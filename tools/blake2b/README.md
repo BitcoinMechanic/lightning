@@ -234,7 +234,7 @@ python tools/blake2b/regression.py \
 
 The runner builds nothing and uses the active Python interpreter. It includes
 Python unit tests, native header/parser tests, startup isolation, four funded
-channel scenarios, and all eighteen swap scenarios. Keep the existing CLN and
+channel scenarios, and all nineteen swap scenarios. Keep the existing CLN and
 native test binaries built. Default concurrency is one; `--jobs 2` overlaps
 independent cases. Workers share a locked port reservation file. Each live case
 gets its own Knots backends, wallets, CLN nodes, and short data directory.
@@ -259,3 +259,21 @@ python tools/blake2b/regression.py \
 Use `--output /tmp/cln-regression-1` for a new named output directory. Remove
 retained test directories yourself after reviewing their logs. The copied
 controller state and node wallets are disposable regtest fixtures.
+
+## Swap with an on-chain XBT claim
+
+```sh
+python tools/blake2b/swap_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --onchain-preimage
+```
+
+The XBT receiver force-closes with a 200,000-sat HTLC pending. The harness
+supplies the receiver's chosen preimage to its claim hook only after confirming
+the commitment. It checks the confirmed HTLC-success witness, the XBT operator's
+on-chain preimage extraction, and the receiver's CSV-delayed wallet sweep.
+The swap controller remains offline during this sequence, then obtains the
+preimage from CLN's completed outgoing payment and releases the 100,000-sat BTC
+HTLC. The original BTC channel stays open. XBT on-chain fees apply, so this
+scenario verifies recovery outputs instead of the four off-chain balance deltas.
+BTC block height remains fixed; cross-chain deadlines and reorg handling are
+not covered. The regression runner includes this as `swap-onchain-preimage`.

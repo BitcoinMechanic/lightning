@@ -6,7 +6,8 @@ from smoke_regtest import wait_until
 
 
 def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
-              mine, rpc, confirmed_outputs):
+              mine, rpc, confirmed_outputs, amount_sat=100000, standalone=True):
+    amount_btc = Decimal(amount_sat) / Decimal(100000000)
     if hashlib.sha256(bytes.fromhex(preimage)).hexdigest() != invoice['payment_hash']:
         raise AssertionError('invoice does not use the chosen preimage')
     delay = rpc(bob, 'listpeerchannels')['channels'][0]['our_to_self_delay']
@@ -27,7 +28,7 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
     if len(commits) != 1:
         raise AssertionError('no unique confirmed Bob commitment')
     commit = commits[0]
-    outputs = [o for o in commit['vout'] if Decimal(str(o['value'])) == Decimal('0.001')
+    outputs = [o for o in commit['vout'] if Decimal(str(o['value'])) == amount_btc
                and o['scriptPubKey']['type'] == 'witness_v0_scripthash']
     if len(outputs) != 1:
         raise AssertionError('cannot identify held HTLC output')
@@ -73,7 +74,7 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
     print('PASS: confirmed witness reveals preimage; Alice learns it on-chain and settles payment', flush=True)
     delayed = [o for o in success['vout']
                if o['scriptPubKey']['type'] == 'witness_v0_scripthash'
-               and Decimal('0.0008') < Decimal(str(o['value'])) <= Decimal('0.001')]
+               and amount_btc * Decimal('0.8') < Decimal(str(o['value'])) <= amount_btc]
     if len(delayed) != 1:
         raise AssertionError('cannot identify Bob delayed HTLC-success output')
     index = delayed[0]['n']
@@ -100,4 +101,7 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
         if rpc(backend, 'gettxout', txid, outnum) is not None:
             raise AssertionError('claimed HTLC ancestor remains unspent')
     print('PASS: Bob sweeps HTLC-success output after CSV delay into confirmed wallet funds', flush=True)
-    print('XBT preimage-claim test OK (preimage learned on-chain; regtest coins only)', flush=True)
+    if standalone:
+        print('XBT preimage-claim test OK (preimage learned on-chain; regtest coins only)', flush=True)
+    return {'payment_preimage': preimage, 'htlc_success_txid': success['txid'],
+            'receiver_sweep_txid': sweeps[0]['txid']}

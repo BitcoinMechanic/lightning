@@ -25,11 +25,12 @@ from smoke_regtest import Lab, wait_until
 def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False,
         pay_invoice=False, quoted_invoice=False, reject_quotes=False, crash_after_btc=False,
         crash_while_pending=False, pending_failure=False, restart_pending=False,
-        kill_pending=False, stale_timelock=False, concurrent=False, outgoing_binding=False):
+        kill_pending=False, stale_timelock=False, concurrent=False, outgoing_binding=False,
+        onchain_preimage=False):
     restart_pending = restart_pending or kill_pending
     crash_while_pending = crash_while_pending or pending_failure or restart_pending
     quoted_invoice = quoted_invoice or crash_after_btc or crash_while_pending or stale_timelock or concurrent
-    quoted_invoice = quoted_invoice or outgoing_binding
+    quoted_invoice = quoted_invoice or outgoing_binding or onchain_preimage
     pay_invoice = pay_invoice or quoted_invoice
     btc = lab.node('knots-btc', False)
     xbt = lab.node('knots-xbt', True)
@@ -86,15 +87,24 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
 
     if fail_outgoing:
         rpc(receiver, 'plugin', 'start', plugin)
-    if crash_while_pending or concurrent:
+    if crash_while_pending or concurrent or onchain_preimage:
         hold = lab.root / 'hold_htlc.py'
         hold.write_text(f'#!{sys.executable}\n' +
                         Path(__file__).with_name('hold_htlc.py').read_text())
         hold.chmod(0o700)
         rpc(receiver, 'plugin', 'start', hold)
-    # Only the XBT receiver creates the preimage. The harness/operator obtains
-    # it from successful XBT payment, not by asking the receiver for its secret.
-    invoice = rpc(receiver, 'invoice', '200000000msat', 'swap-receive', 'BTC to XBT test')
+    receiver_preimage = None
+    if onchain_preimage:
+        # This fixture chooses a receiver secret solely to drive its on-chain
+        # claim, as in funded_regtest --preimage-claim. It is never passed to
+        # the swap controller or used to release BTC directly.
+        receiver_preimage = secrets.token_hex(32)
+        invoice = lab.rpc([*receiver['cli'], '-k'], 'invoice', 'amount_msat=200000000',
+                          'label=swap-receive', 'description=XBT swap onchain claim',
+                          'preimage=' + receiver_preimage)
+    else:
+        # Ordinary scenarios leave preimage generation entirely to the receiver.
+        invoice = rpc(receiver, 'invoice', '200000000msat', 'swap-receive', 'BTC to XBT test')
     payment_hash = invoice['payment_hash']
     if not invoice['bolt11'].startswith('lnxbtrt'):
         raise AssertionError('receiver did not issue an XBT invoice')
@@ -167,6 +177,11 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
     print('PASS: 100,000 BTC sats held under XBT invoice hash; incoming expiry has test margin', flush=True)
 
     recovered_preimage = None
+    if onchain_preimage:
+        from onchain_swap import run_onchain
+        run_onchain(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
+                    receiver_preimage, stored['binding'], plugin, initial, pay_process, pay_log)
+        return
     if stale_timelock:
         from stale_timelock import run_stale
         run_stale(lab, payer, swap_btc, swap_xbt, receiver, btc, invoice,
@@ -431,6 +446,8 @@ def main():
                       help='Start a competing controller while XBT is pending and verify only one attempt.')
     mode.add_argument('--outgoing-binding', action='store_true',
                       help='Refuse substituted XBT invoice/destination, then complete the correct swap.')
+    mode.add_argument('--onchain-preimage', action='store_true',
+                      help='Claim XBT on-chain after receiver force-close, then recover BTC settlement.')
     parser.add_argument('--work-dir', type=Path, help='New short directory to retain data/logs.')
     args = parser.parse_args()
     temporary = None
@@ -450,7 +467,7 @@ def main():
             args.pending_failure or args.pending_restart_failure or args.pending_kill_failure,
             args.pending_restart or args.pending_restart_failure,
             args.pending_kill or args.pending_kill_failure, args.stale_timelock, args.concurrent,
-            args.outgoing_binding)
+            args.outgoing_binding, args.onchain_preimage)
     except Exception as exc:
         if isinstance(exc, subprocess.CalledProcessError):
             print(f'RPC stdout: {exc.stdout}\nRPC stderr: {exc.stderr}', flush=True)

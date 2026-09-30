@@ -45,7 +45,7 @@ def cases():
                  'quoted-invoice', 'quoted-restart', 'reject-quotes', 'crash-after-btc',
                  'crash-while-pending', 'pending-failure', 'pending-restart',
                  'pending-restart-failure', 'pending-kill', 'pending-kill-failure',
-                 'stale-timelock', 'concurrent', 'outgoing-binding'):
+                 'stale-timelock', 'concurrent', 'outgoing-binding', 'onchain-preimage'):
         result.append(Case('swap-' + (mode or 'direct'),
                            (sys.executable, str(HERE / 'swap_regtest.py')) +
                            (('--' + mode,) if mode else ()), True))
