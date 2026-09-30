@@ -119,7 +119,7 @@ def main():
         if method == 'init':
             network = params['configuration']['network']
             live_profile = params.get('options', {}).get('xbt-live-pilot')
-            live = network == 'bitcoin' and live_profile in ('live-pilot-v1', 'live-pilot-v2')
+            live = network == 'bitcoin' and live_profile in ('live-pilot-v1', 'live-pilot-v2', 'live-market-v1')
             active = network == 'regtest' or live
             reply(request, {} if active else {'disable': 'requires regtest or explicit live pilot'})
             continue
@@ -135,14 +135,26 @@ def main():
                     required.add('pilot')
                     if quote.get('pilot') == 'live-pilot-v2':
                         required.update(('replaces', 'btc_channel'))
+                    if quote.get('pilot') == 'live-market-v1':
+                        required.update(('btc_channel', 'oracle_digest', 'controller_id'))
                 if set(quote) != required:
                     raise ValueError('unexpected quote fields')
                 if live:
                     limits = {'live-pilot-v1': (1000000, 2000000),
                               'live-pilot-v2': (2000000, 4000000)}
-                    if (quote['pilot'] not in limits
-                            or (quote['btc_amount_msat'], quote['xbt_amount_msat']) != limits[quote['pilot']]
-                            or quote['min_cltv_delta'] != 288 or quote['max_cltv_delta'] != 2016):
+                    if quote['pilot'] == 'live-market-v1':
+                        for key, cap in (('btc_amount_msat', 10000000), ('xbt_amount_msat', 500000000)):
+                            if type(quote[key]) is not int or quote[key] % 1000 or not 0 < quote[key] <= cap:
+                                raise ValueError('market amount outside hard limits')
+                        for key in ('oracle_digest', 'controller_id'):
+                            if len(bytes.fromhex(quote[key])) != 32 or quote[key] != quote[key].lower():
+                                raise ValueError('invalid market audit or controller identity')
+                        if not isinstance(quote['btc_channel'], str) or not quote['btc_channel']:
+                            raise ValueError('missing market channel binding')
+                    elif (quote['pilot'] not in limits
+                          or (quote['btc_amount_msat'], quote['xbt_amount_msat']) != limits[quote['pilot']]):
+                        raise ValueError('live pilot limits mismatch')
+                    if quote['min_cltv_delta'] != 288 or quote['max_cltv_delta'] != 2016:
                         raise ValueError('live pilot limits mismatch')
                     if quote['payment_hash'] not in quotes:
                         if quote['pilot'] != live_profile:
@@ -155,6 +167,18 @@ def main():
                                     or not previous.get('binding')
                                     or quote['btc_channel'] != previous['binding'][0]):
                                 raise ValueError('replacement requires the sole failed v1 quote on its original channel')
+                        elif quote['pilot'] == 'live-market-v1':
+                            now = int(time.time())
+                            if not now < quote['expires_at'] <= now + 120:
+                                raise ValueError('market quote expiry exceeds two minutes')
+                            for previous in quotes.values():
+                                phase = previous['phase']
+                                if phase in ('resolved', 'failed'):
+                                    continue
+                                if (phase == 'quoted' and previous['terms']['expires_at'] <= now
+                                        and 'binding' not in previous and 'accepted' not in previous):
+                                    continue
+                                raise ValueError('another quote is active; finish it first')
                         elif quotes:
                             raise ValueError('live pilot permits one quote only; retain original state')
                 for key in ('payment_hash', 'payment_secret'):
@@ -264,7 +288,9 @@ def main():
                                 'xbt_amount_msat': terms['xbt_amount_msat'],
                                 'btc_amount_msat': terms['btc_amount_msat'],
                                 'pilot': terms.get('pilot'),
-                                'btc_channel': terms.get('btc_channel')})
+                                'btc_channel': terms.get('btc_channel'),
+                                'oracle_digest': terms.get('oracle_digest'),
+                                'controller_id': terms.get('controller_id')})
             elif method == 'xbt-fail':
                 payment_hash = params[0] if isinstance(params, list) else params['payment_hash']
                 binding = params[1] if isinstance(params, list) else params['binding']

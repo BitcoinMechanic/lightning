@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROFILE = 'live-pilot-v1'
 PROFILE_V2 = 'live-pilot-v2'
+PROFILE_MARKET = 'live-market-v1'
 BTC_MSAT = 1000000
 XBT_MSAT = 2000000
 MIN_CLTV = 288
@@ -16,12 +17,15 @@ CLOSE_BLOCKS = 72
 
 def is_live(data):
     profile = data.get('profile', 'regtest')
-    if profile not in ('regtest', PROFILE, PROFILE_V2):
+    if profile not in ('regtest', PROFILE, PROFILE_V2, PROFILE_MARKET):
         raise ValueError('unknown swap profile')
-    return profile in (PROFILE, PROFILE_V2)
+    return profile in (PROFILE, PROFILE_V2, PROFILE_MARKET)
 
 
 def amounts(data):
+    if data.get('profile') == PROFILE_MARKET:
+        from market_policy import state_amounts
+        return state_amounts(data)
     return (2000000, 4000000) if data.get('profile') == PROFILE_V2 else (BTC_MSAT, XBT_MSAT)
 
 
@@ -60,10 +64,10 @@ def replacement(config, rpc):
             os.close(fd)
 
 
-def incoming_preflight(config, channel_id, rpc):
+def incoming_preflight(config, channel_id, rpc, amount_msat=None):
     channels = [c for c in rpc(config['btc_cli'], 'listpeerchannels')['channels']
                 if c.get('short_channel_id') == channel_id]
-    btc_amount, _ = amounts(config)
+    btc_amount = amounts(config)[0] if amount_msat is None else amount_msat
     if (len(channels) != 1 or channels[0]['state'] != 'CHANNELD_NORMAL'
             or not channels[0]['peer_connected'] or channels[0].get('htlcs')
             or channels[0]['receivable_msat'] < btc_amount):
@@ -118,7 +122,7 @@ def require_untrimmed(channel, amount):
 
 def check_channels(state, rpc):
     btc_amount, xbt_amount = amounts(state)
-    if (state.get('profile') == PROFILE_V2
+    if (state.get('profile') in (PROFILE_V2, PROFILE_MARKET)
             and state.get('btc_channel') != state['btc_binding'][0]):
         raise RuntimeError('incoming channel differs from preflight binding')
     incoming = [c for c in rpc(state['btc_cli'], 'listpeerchannels')['channels']

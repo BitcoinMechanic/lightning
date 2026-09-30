@@ -24,11 +24,17 @@ def emit(value):
 def config_from(path):
     config = json.loads(path.read_text())
     if set(config) not in ({'btc_cli', 'xbt_cli'}, {'btc_cli', 'xbt_cli', 'profile'},
-                            {'btc_cli', 'xbt_cli', 'profile', 'previous_state'}):
+                            {'btc_cli', 'xbt_cli', 'profile', 'previous_state'},
+                            {'btc_cli', 'xbt_cli', 'profile', 'market'}):
         raise ValueError('config needs btc_cli, xbt_cli and optionally profile')
     pilot.is_live(config)
     if (config.get('profile') == pilot.PROFILE_V2) != ('previous_state' in config):
         raise ValueError('v2 requires previous_state; other profiles must omit it')
+    if (config.get('profile') == pilot.PROFILE_MARKET) != ('market' in config):
+        raise ValueError('market profile requires market policy')
+    if 'market' in config:
+        from market_policy import policy
+        policy(config)
     for cli in (config['btc_cli'], config['xbt_cli']):
         if (not isinstance(cli, list) or not cli or
                 any(not isinstance(arg, str) or not arg for arg in cli)
@@ -49,11 +55,14 @@ def identities(config):
 
 
 def create(config, invoice, btc_sats, directory):
-    if type(btc_sats) is not int or not 0 < btc_sats <= 2100000000000000:
+    market = config.get('profile') == pilot.PROFILE_MARKET
+    if market and btc_sats is not None:
+        raise ValueError('market quotes obtain BTC amount only from the oracle')
+    if not market and (type(btc_sats) is not int or not 0 < btc_sats <= 2100000000000000):
         raise ValueError('BTC price must be a positive integer number of sats')
     live = pilot.is_live(config)
-    btc_amount, xbt_amount = pilot.amounts(config)
-    if live and btc_sats * 1000 != btc_amount:
+    btc_amount, xbt_amount = (None, None) if market else pilot.amounts(config)
+    if live and not market and btc_sats * 1000 != btc_amount:
         raise ValueError('BTC amount differs from selected pilot profile')
     replacement = None
     if config.get('profile') == pilot.PROFILE_V2:
@@ -69,7 +78,7 @@ def create(config, invoice, btc_sats, directory):
             or not invoice.startswith('lnxbt' if live else 'lnxbtrt')
             or type(amount) is not int or amount <= 0 or not decoded.get('payment_secret')):
         raise ValueError('requires a signed fixed-amount XBT invoice for the selected profile')
-    if live and amount != xbt_amount:
+    if live and not market and amount != xbt_amount:
         raise ValueError('XBT amount differs from selected pilot profile')
     now = int(time.time())
     # Allow time for submission after the BTC quote expires.
@@ -90,6 +99,13 @@ def create(config, invoice, btc_sats, directory):
     attempts = Lab.rpc(config['xbt_cli'], 'listsendpays')['payments']
     if any(p['payment_hash'] == decoded['payment_hash'] for p in attempts):
         raise ValueError('XBT invoice already has an outgoing attempt')
+    audit = None
+    if market:
+        from market_policy import prepare
+        audit = prepare(config, decoded, channels[0], Lab.rpc)
+        btc_sats = audit['btc_sats']
+        btc_amount = btc_sats * 1000
+        expires = min(expires, int(time.time()) + 120)
     terms = {'payment_hash': decoded['payment_hash'], 'payment_secret': secrets.token_hex(32),
              'btc_amount_msat': btc_sats * 1000, 'xbt_amount_msat': amount,
              'xbt_invoice': invoice, 'expires_at': expires, 'min_cltv_delta': 100,
@@ -101,6 +117,10 @@ def create(config, invoice, btc_sats, directory):
         if decoded['payment_hash'] == replacement[0]:
             raise ValueError('replacement needs a new invoice hash')
         terms.update(replaces=replacement[0], btc_channel=replacement[1])
+    if market:
+        from market_policy import digest
+        terms.update(btc_channel=config['market']['btc_channel'],
+                     oracle_digest=digest(audit), controller_id=secrets.token_hex(32))
     template = dict(config, phase='prepared', quote_gate=True, btc_deadline_guard=True,
                     payment_hash=decoded['payment_hash'], payment_secret=decoded['payment_secret'],
                     xbt_invoice=invoice, xbt_amount_msat=amount,
@@ -110,6 +130,9 @@ def create(config, invoice, btc_sats, directory):
         template.update(node_ids=ids, btc_amount_msat=btc_amount)
         if replacement:
             template.update(btc_channel=replacement[1])
+    if market:
+        template.update(btc_channel=terms['btc_channel'], oracle=audit,
+                        oracle_digest=terms['oracle_digest'], controller_id=terms['controller_id'])
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     # Save everything needed to retry registration/signing before any mutation.
     save(directory / 'quote.json', {'config': config, 'node_ids': ids, 'terms': terms,
@@ -118,6 +141,9 @@ def create(config, invoice, btc_sats, directory):
 
 def publication_preflight(data):
     terms = data['terms']
+    if data['config'].get('profile') == pilot.PROFILE_MARKET:
+        from market_policy import publication
+        publication(data, Lab.rpc)
     if data['config'].get('profile') == pilot.PROFILE_V2:
         previous, channel = pilot.replacement(data['config'], Lab.rpc)
         if terms.get('replaces') != previous or terms.get('btc_channel') != channel:
@@ -291,21 +317,31 @@ def status(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('quote', 'invoice', 'renew', 'run', 'status'):
+    for name in ('quote', 'invoice', 'renew', 'run', 'status', 'market-check', 'quote-market'):
         command = commands.add_parser(name)
         command.add_argument('--directory', required=True, type=Path)
-        if name == 'quote':
+        if name == 'market-check':
+            command.add_argument('--margin-bps', type=int, default=0)
+        if name in ('quote', 'quote-market'):
             command.add_argument('--config', required=True, type=Path)
             command.add_argument('--xbt-invoice', required=True)
-            command.add_argument('--btc-sats', required=True, type=int)
+            if name == 'quote':
+                command.add_argument('--btc-sats', required=True, type=int)
     args = parser.parse_args()
     directory = args.directory.resolve()
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
     try:
-        if args.command == 'quote':
-            create(config_from(args.config), args.xbt_invoice, args.btc_sats, directory)
+        if args.command == 'market-check':
+            from market_check import check
+            emit(check(directory, args.margin_bps))
+            return 0
+        if args.command in ('quote', 'quote-market'):
+            config = config_from(args.config)
+            if (args.command == 'quote-market') != (config.get('profile') == pilot.PROFILE_MARKET):
+                raise ValueError('quote command does not match profile')
+            create(config, args.xbt_invoice, getattr(args, 'btc_sats', None), directory)
         if args.command == 'status':
             emit(status(directory))
             return 0
@@ -316,7 +352,7 @@ def main():
             if args.command == 'renew':
                 emit(renew(directory))
                 return 0
-            if args.command in ('quote', 'invoice'):
+            if args.command in ('quote', 'quote-market', 'invoice'):
                 emit(publish(directory))
                 return 0
             return serve(directory, stop)

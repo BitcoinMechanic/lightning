@@ -51,6 +51,8 @@ def main():
     parser.add_argument('--listen-port', type=int, help='LAN peer port (default: 19735)')
     parser.add_argument('--live-pilot', action='store_true',
                         help='Persistently enable the one-quote BTC-to-XBT pilot gate')
+    parser.add_argument('--market-swaps', action='store_true',
+                        help='Persistently enable bounded oracle-priced swaps')
     args = parser.parse_args()
     try:
         peers = peer_options(args.listen_host, args.listen_port)
@@ -82,13 +84,17 @@ def main():
     gate = root / 'live-swap-gate.py'
     # Once installed, reload on every restart: omitting the flag must not
     # accidentally drop held hooks. Never replace/delete its quotes database.
-    if args.live_pilot or gate.exists():
+    market_marker = root / 'market-swaps-v1'
+    if args.market_swaps:
+        market_marker.touch(mode=0o600)
+    if args.live_pilot or gate.exists() or market_marker.exists():
         temporary = root / 'live-swap-gate.tmp'
         temporary.write_text('#!' + sys.executable + '\n' +
                              source.with_name('quote_plugin.py').read_text())
         temporary.chmod(0o700)
         temporary.replace(gate)
-        command.extend(['--plugin=' + str(gate), '--xbt-live-pilot=live-pilot-v2'])
+        profile = 'live-market-v1' if market_marker.exists() else 'live-pilot-v2'
+        command.extend(['--plugin=' + str(gate), '--xbt-live-pilot=' + profile])
     mode = 'offline' if args.listen_host is None else 'LAN listener'
     print('BTC backend verified; starting BTC node (' + mode + ').', flush=True)
     os.execv(str(binary), command)

@@ -46,9 +46,13 @@ def check_spend(state):
                 or info['min_cltv_delta'] != pilot.MIN_CLTV
                 or info['max_cltv_delta'] != pilot.MAX_CLTV):
             raise RuntimeError('live quote policy mismatch')
-        if (state['profile'] == pilot.PROFILE_V2
+        if (state['profile'] in (pilot.PROFILE_V2, pilot.PROFILE_MARKET)
                 and info.get('btc_channel') != state.get('btc_channel')):
             raise RuntimeError('live quote incoming channel mismatch')
+        if state['profile'] == pilot.PROFILE_MARKET:
+            if (info.get('oracle_digest') != state['oracle_digest']
+                    or info.get('controller_id') != state['controller_id']):
+                raise RuntimeError('market quote audit or controller mismatch')
         pilot.require_reserves(state, Lab.rpc)
         pilot.check_channels(state, Lab.rpc)
     height = Lab.rpc(state['btc_cli'], 'getinfo')['blockheight']
