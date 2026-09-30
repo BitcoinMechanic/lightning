@@ -479,20 +479,19 @@ static struct command_result *getchaininfo(struct command *cmd,
 	if (err)
 		return command_err(cmd, res, tal_fmt(tmpctx, "bad JSON: %s", err));
 
-	/* This experimental network has a fixed local test schedule. Check the
-	 * backend on every poll, not just initialization: both BTC and XBT report
-	 * "regtest", so that name alone cannot identify this chain. */
-	if (streq(chainparams->network_name, "xbt-regtest")) {
+	/* Shared-history XBT forks need backend checks on every poll: their
+	 * Bitcoin RPC chain names alone do not identify the fork. */
+	if (chainparams->has_blake2b_headers) {
 		struct bcli_result *deployment;
 		const jsmntok_t *dtoks;
 		u32 activation;
 		bool active;
 
-		if (!streq(chain, "regtest"))
-			return command_err(cmd, res, "xbt-regtest requires a regtest backend");
+		if (!streq(chain, chainparams->bip70_name))
+			return command_err(cmd, res, "XBT backend chain name mismatch");
 		deployment = run_bitcoin_cli(cmd, cmd->plugin, "getdeploymentinfo", NULL);
 		if (deployment->exitstatus != 0)
-			return command_err(cmd, deployment, "xbt-regtest requires Knots getdeploymentinfo");
+			return command_err(cmd, deployment, "XBT requires Knots getdeploymentinfo");
 		dtoks = json_parse_simple(deployment->output, deployment->output,
 					  deployment->output_len);
 		if (!dtoks)
@@ -501,9 +500,21 @@ static struct command_result *getchaininfo(struct command *cmd,
 				"{blake2b:{height:%,active:%}}",
 				JSON_SCAN(json_to_number, &activation),
 				JSON_SCAN(json_to_bool, &active));
-		if (err || activation != 1 || !active)
+		if (err || activation != chainparams->blake2b_activation_height || !active)
 			return command_err(cmd, deployment,
-				"xbt-regtest requires Knots with -testactivationheight=blake2b@1");
+				chainparams->blake2b_activation_height == 1
+				? "xbt-regtest requires Knots with -testactivationheight=blake2b@1"
+				: "XBT backend activation schedule mismatch");
+		if (chainparams->blake2b_checkpoint) {
+			struct bcli_result *checkpoint;
+			checkpoint = run_bitcoin_cli(cmd, cmd->plugin, "getblockhash",
+				tal_fmt(tmpctx, "%u", chainparams->blake2b_activation_height), NULL);
+			if (checkpoint->exitstatus != 0)
+				return command_err(cmd, checkpoint, "cannot read XBT activation block");
+			strip_trailing_whitespace(checkpoint->output, checkpoint->output_len);
+			if (!streq(checkpoint->output, chainparams->blake2b_checkpoint))
+				return command_err(cmd, checkpoint, "XBT activation checkpoint mismatch");
+		}
 	}
 
 	if (bitcoind->dev_ignore_ibd)
@@ -514,11 +525,13 @@ static struct command_result *getchaininfo(struct command *cmd,
 	json_add_u32(response, "headercount", headers);
 	json_add_u32(response, "blockcount", blocks);
 	json_add_bool(response, "ibd", ibd);
-	if (streq(chainparams->network_name, "xbt-regtest")) {
+	if (chainparams->has_blake2b_headers) {
 		/* Report the backend checks above to lightningd. Other backend
 		 * plugins must provide the same verified declaration. */
 		json_add_bool(response, "blake2b_active", true);
-		json_add_u32(response, "blake2b_activation_height", 1);
+		json_add_u32(response, "blake2b_activation_height", chainparams->blake2b_activation_height);
+		if (chainparams->blake2b_checkpoint)
+			json_add_string(response, "blake2b_checkpoint", chainparams->blake2b_checkpoint);
 	}
 
 	return command_finished(cmd, response);

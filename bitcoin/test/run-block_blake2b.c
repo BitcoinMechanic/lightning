@@ -204,6 +204,25 @@ int main(int argc, const char *argv[])
 	assert(headers && headers->type == JSMN_ARRAY && headers->size == 5);
 	json_for_each_arr(i, v, headers)
 		test_vector(json, v);
+	/* Actual live-chain headers, independently captured through Knots RPC. */
+	json = grab_file_str(tmpctx, "tests/data/blake2b/live_headers.json");
+	assert(json);
+	toks = json_parse_simple(tmpctx, json, strlen(json));
+	assert(toks);
+	headers = json_get_member(json, toks, "headers");
+	assert(headers && headers->type == JSMN_ARRAY && headers->size == 2);
+	json_for_each_arr(i, v, headers) {
+		char *hex = json_strdup(tmpctx, json, json_get_member(json, v, "serialized"));
+		char *hash = json_strdup(tmpctx, json, json_get_member(json, v, "block_hash"));
+		size_t len = hex_data_size(strlen(hex));
+		u8 *raw = tal_arr(tmpctx, u8, len);
+		struct bitcoin_blkid expected, actual;
+		assert(hex_decode(hex, strlen(hex), raw, len));
+		assert(bitcoin_blkid_from_hex(hash, strlen(hash), &expected));
+		assert(bitcoin_block_blake2b_hash(raw, len, &actual));
+		assert(bitcoin_blkid_eq(&actual, &expected));
+	}
+	puts("Live XBT header hashes OK");
 	test_legacy();
 	test_elements();
 	common_shutdown();

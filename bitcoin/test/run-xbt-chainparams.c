@@ -21,7 +21,20 @@ int main(int argc, const char *argv[])
 	regtest = chainparams_for_network("regtest");
 	xbt = chainparams_for_network("xbt-regtest");
 	assert(btc && regtest && xbt);
-	assert(!chainparams_for_network("xbt"));
+	{
+		const struct chainparams *live = chainparams_for_network("xbt");
+		assert(live && live->has_blake2b_headers && !live->testnet);
+		assert(live->blake2b_activation_height == 961640);
+		assert(bitcoin_blkid_eq(&live->genesis_blockhash, &btc->genesis_blockhash));
+		assert(!bitcoin_blkid_eq(chainparams_get_chainhash(live), chainparams_get_chainhash(btc)));
+		assert(!bitcoin_blkid_eq(chainparams_get_chainhash(live), chainparams_get_chainhash(xbt)));
+		assert(chainparams_by_chainhash(chainparams_get_chainhash(live)) == live);
+		assert(chainparams_by_lightning_hrp("xbt") == live);
+		assert(streq(live->onchain_hrp, "bc"));
+		assert(!chainparams_accepts_peer_networks(live, chainparams_get_chainhash(btc), 1));
+		assert(!chainparams_accepts_peer_networks(live, NULL, 0));
+		assert(!bolt12_chain_matches(NULL, live));
+	}
 	assert(xbt->testnet && xbt->has_blake2b_headers && !xbt->is_elements);
 	assert(bitcoin_blkid_eq(&regtest->genesis_blockhash, &xbt->genesis_blockhash));
 	assert(!bitcoin_blkid_eq(chainparams_get_chainhash(regtest),

@@ -88,6 +88,13 @@ class HeaderTests(unittest.TestCase):
                 for field, value in result.items():
                     self.assertEqual(value, vector[field], field)
 
+    def test_live_headers(self):
+        path = Path(__file__).resolve().parents[2] / 'tests/data/blake2b/live_headers.json'
+        for vector in json.loads(path.read_text())['headers']:
+            with self.subTest(height=vector['height']):
+                self.assertEqual(header_hashes(bytes.fromhex(vector['serialized']))['block_hash'],
+                                 vector['block_hash'])
+
     def test_legacy_genesis(self):
         raw = bytes.fromhex(
             '01000000' + '00' * 32

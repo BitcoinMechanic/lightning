@@ -36,6 +36,16 @@ static const struct bitcoin_blkid xbt_regtest_chainhash = {{{.u.u8 = {
 	0xb5, 0x7d, 0xb0, 0x3f, 0x66, 0xa0, 0x32, 0xbb,
 }}}};
 
+/* Private experimental Lightning identity for the live fork, NOT an agreed
+ * public Lightning standard. SHA256 of the literal ASCII string
+ * "BitcoinMechanic/lightning:experimental:xbt:v1", in internal byte order. */
+static const struct bitcoin_blkid xbt_chainhash = {{{.u.u8 = {
+	0x75, 0xc0, 0x9f, 0x7e, 0xbd, 0x13, 0x63, 0x49,
+	0x5b, 0xc3, 0x36, 0xd1, 0xa4, 0x7d, 0xa2, 0xb4,
+	0x35, 0x48, 0xbe, 0x1e, 0x9b, 0x44, 0x03, 0xee,
+	0x2d, 0xb6, 0xd9, 0x01, 0x15, 0x46, 0x53, 0xe4,
+}}}};
+
 const struct chainparams networks[] = {
     {.network_name = "bitcoin",
      .onchain_hrp = "bc",
@@ -70,6 +80,43 @@ const struct chainparams networks[] = {
      .bip32_key_version = {.bip32_pubkey_version = BIP32_VER_MAIN_PUBLIC,
 			   .bip32_privkey_version = BIP32_VER_MAIN_PRIVATE},
      .is_elements = false},
+    {.network_name = "xbt",
+     .onchain_hrp = "bc",
+     .lightning_hrp = "xbt",
+     .bip70_name = "main",
+     .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
+				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
+				      0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1,
+				      0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00,
+				      0x00, 0x00, 0x00, 0x00}}}},
+     .lightning_chainhash = &xbt_chainhash,
+     .rpc_port = 8332,
+     .ln_port = 9835,
+     .cli = "bitcoin-cli",
+     .cli_args = NULL,
+     .cli_min_supported_version = 290402,
+     .dust_limit = { 546 },
+     /* BOLT #2:
+      *
+      * The sending node:
+      *...
+      *   - MUST set `funding_satoshis` to less than 2^24 satoshi.
+      */
+     .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
+     .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+     /* "Lightning Charge Powers Developers & Blockstream Store" */
+     .when_lightning_became_cool = 961640,
+     .p2pkh_version = 0,
+     .p2sh_version = 5,
+     .testnet = false,
+     .fee_asset_tag = NULL,
+     .bip32_key_version = {.bip32_pubkey_version = BIP32_VER_MAIN_PUBLIC,
+			   .bip32_privkey_version = BIP32_VER_MAIN_PRIVATE},
+     .is_elements = false,
+     .has_blake2b_headers = true,
+     .blake2b_activation_height = 961640,
+     .blake2b_checkpoint = "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb"},
     {.network_name = "regtest",
      .onchain_hrp = "bcrt",
      .lightning_hrp = "bcrt",
@@ -123,7 +170,8 @@ const struct chainparams networks[] = {
      .bip32_key_version = {.bip32_pubkey_version = BIP32_VER_TEST_PUBLIC,
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = false,
-     .has_blake2b_headers = true},
+     .has_blake2b_headers = true,
+     .blake2b_activation_height = 1},
     {.network_name = "signet",
      .onchain_hrp = "tb",
      .lightning_hrp = "tbs",

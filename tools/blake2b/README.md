@@ -345,3 +345,50 @@ pending, automatic BTC closure at 30 blocks, and automatic BTC release after
 XBT settlement. It reuses the confirmed on-chain claim and wallet sweep checks.
 Use the usual `--bitcoind` and `--bitcoin-cli` arguments. The regression catalog
 includes `swap-watch-deadline` and `unit-swap-watch`.
+
+## Live XBT chain: offline observation only
+
+`--network=xbt` selects the experimental live-chain configuration. It retains
+Bitcoin's genesis, `bc` on-chain addresses, and mainnet BIP32 versions, while
+using `lnxbt` invoices and a separate experimental Lightning chain identity.
+That identity is specific to this project, not an agreed public XBT Lightning
+standard. RPC defaults to 8332 and the separate Lightning port is 9835.
+
+On every chain poll, bcli requires Knots to report BLAKE2b active at 961640
+and verifies that height's hash against the pinned source checkpoint:
+`0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb`.
+lightningd requires the backend to declare both verified checks. Regtest
+retains its separate height-1 policy and identity. The live first-fork header
+and header at height 974797 are included as native and Python hash vectors.
+
+For the first launch, export `XBT_RPC_HOST`, `XBT_RPC_PORT`, `XBT_RPC_USER`,
+and `XBT_RPC_PASSWORD`, then use the project's venv:
+
+```bash
+python tools/blake2b/live_node.py \
+  --bitcoin-cli ../bitcoin-cli \
+  --lightning-dir "$HOME/cln-xbt-observe"
+```
+
+Use a new directory. The helper starts the built lightningd with `--offline`
+and an empty configuration file; it does not request channel connections,
+funding, or payments. It creates a new CLN wallet and writes its log to
+`$HOME/cln-xbt-observe/lightning.log`. Restart with the same command and exported
+variables. RPC password delivery uses bitcoin-cli's `-stdinrpcpass`, preserving
+the separate stdin RPC arguments sent by bcli. The generated wrapper contains
+paths, not credentials. Do not add bitcoin-rpc credential options to this
+launch path; configure its RPC endpoint through the environment only.
+
+In another terminal, inspect startup:
+
+```bash
+./cli/lightning-cli --lightning-dir="$HOME/cln-xbt-observe" --network=xbt getinfo
+./cli/lightning-cli --lightning-dir="$HOME/cln-xbt-observe" --network=xbt listfunds
+```
+
+This checkpoint is for observing chain synchronization with an unfunded wallet.
+Live funding/channel operation is not validated here, including the fork's
+extended coinbase-maturity rules, fee behavior, and cross-chain timing safety.
+The swap service still explicitly refuses live networks. An offline CLN node
+still contacts its Bitcoin backend; `--offline` disables automatic Lightning
+peer connections/listening, not RPC access to Knots.

@@ -56,8 +56,11 @@ struct chainparams {
 	const struct bip32_key_version bip32_key_version;
 	const bool is_elements;
 	/* Accept Knots v2 headers as well as historical SHA256d headers.
-	 * Only the experimental XBT regtest network enables this for now. */
+	 * Enabled only for the experimental XBT networks. */
 	const bool has_blake2b_headers;
+	const u32 blake2b_activation_height;
+	/* RPC-display hash at activation, NULL for private regtest. */
+	const char *blake2b_checkpoint;
 	const u8 *fee_asset_tag;
 };
 
