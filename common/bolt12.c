@@ -33,12 +33,12 @@ bool bolt12_chains_match(const struct bitcoin_blkid *chains,
 	 */
 	if (!chains) {
 		max_num_chains = 1;
-		chains = &chainparams_for_network("bitcoin")->genesis_blockhash;
+		chains = chainparams_get_chainhash(chainparams_for_network("bitcoin"));
 	}
 
 	for (size_t i = 0; i < max_num_chains; i++) {
 		if (bitcoin_blkid_eq(&chains[i],
-				     &must_be_chain->genesis_blockhash))
+				     chainparams_get_chainhash(must_be_chain)))
 			return true;
 	}
 

@@ -198,7 +198,7 @@ static struct io_plan *handshake_success(struct io_conn *conn,
 		if (explicit_network) {
 			tlvs = tlv_init_tlvs_new(NULL);
 			tlvs->networks = tal_arr(tlvs, struct bitcoin_blkid, 1);
-			tlvs->networks[0] = chainparams->genesis_blockhash;
+			tlvs->networks[0] = *chainparams_get_chainhash(chainparams);
 		}
 		msg = towire_init(NULL, NULL, features, tlvs);
 
@@ -208,7 +208,7 @@ static struct io_plan *handshake_success(struct io_conn *conn,
 		tal_free(tlvs);
 
 		msg = towire_gossip_timestamp_filter(NULL,
-						     &chainparams->genesis_blockhash,
+						     chainparams_get_chainhash(chainparams),
 						     all_gossip ? 0
 						     : no_gossip ? 0xFFFFFFFF : clock_time().ts.tv_sec,
 						     0xFFFFFFFF);

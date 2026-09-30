@@ -475,7 +475,7 @@ struct command_result *json_offer(struct command *cmd,
 	 */
 	if (!streq(chainparams->network_name, "bitcoin")) {
 		offer->offer_chains = tal_arr(offer, struct bitcoin_blkid, 1);
-		offer->offer_chains[0] = chainparams->genesis_blockhash;
+		offer->offer_chains[0] = *chainparams_get_chainhash(chainparams);
 	}
 
 	if (!offer_recurrence(offer)) {
@@ -723,7 +723,7 @@ struct command_result *json_invoicerequest(struct command *cmd,
 	if (!streq(chainparams->network_name, "bitcoin")) {
 		invreq->invreq_chain
 			= tal_dup(invreq, struct bitcoin_blkid,
-				  &chainparams->genesis_blockhash);
+				  chainparams_get_chainhash(chainparams));
 	}
 	/* BOLT #12:
 	 * - if it sets `invreq_amount`:

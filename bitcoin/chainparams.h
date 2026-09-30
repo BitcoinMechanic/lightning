@@ -21,6 +21,10 @@ struct chainparams {
 	 * the API 'getblockchaininfo' */
 	const char *bip70_name;
 	const struct bitcoin_blkid genesis_blockhash;
+	/* Lightning protocol/domain identity for a shared-history fork. NULL
+	 * means the historical genesis-based identity. Never substitute this
+	 * for the actual block-zero hash in on-chain validation. */
+	const struct bitcoin_blkid *lightning_chainhash;
 	const int rpc_port;
 	/**
 	 * BOLT 1:
@@ -51,8 +55,33 @@ struct chainparams {
 	/* Version codes for BIP32 extended keys in libwally-core*/
 	const struct bip32_key_version bip32_key_version;
 	const bool is_elements;
+	/* Accept Knots v2 headers as well as historical SHA256d headers.
+	 * Only the experimental XBT regtest network enables this for now. */
+	const bool has_blake2b_headers;
 	const u8 *fee_asset_tag;
 };
+
+static inline const struct bitcoin_blkid *
+chainparams_get_chainhash(const struct chainparams *params)
+{
+	return params->lightning_chainhash ? params->lightning_chainhash
+		: &params->genesis_blockhash;
+}
+
+/* Forks with a separate Lightning identity require an explicit networks TLV.
+ * Preserve the historical behavior for peers omitting it on other chains. */
+static inline bool chainparams_accepts_peer_networks(
+	const struct chainparams *params, const struct bitcoin_blkid *chains,
+	size_t num_chains)
+{
+	if (!chains)
+		return params->lightning_chainhash == NULL;
+	for (size_t i = 0; i < num_chains; i++) {
+		if (bitcoin_blkid_eq(&chains[i], chainparams_get_chainhash(params)))
+			return true;
+	}
+	return false;
+}
 
 /**
  * chainparams_for_network - Look up blockchain parameters by its name
@@ -67,7 +96,7 @@ const struct chainparams *chainparams_for_network(const char *network_name);
 const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp);
 
 /**
- * chainparams_by_chainhash - Helper to get a network by its genesis blockhash
+ * chainparams_by_chainhash - Look up a Lightning protocol chain identity
  */
 const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *chain_hash);
 

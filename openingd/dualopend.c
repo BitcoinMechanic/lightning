@@ -2599,7 +2599,7 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 	 *  - the `chain_hash` value is set to a hash of a chain
 	 *  that is unknown to the receiver.
 	 */
-	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash)) {
+	if (!bitcoin_blkid_eq(&chain_hash, chainparams_get_chainhash(chainparams))) {
 		negotiation_failed(state, "Unknown chain-hash %s",
 				   fmt_bitcoin_blkid(tmpctx,
 						  &chain_hash));
@@ -3134,7 +3134,7 @@ static void opener_start(struct state *state, u8 *msg)
 			tal(open_tlv, struct tlv_opening_tlvs_require_confirmed_inputs);
 
 	msg = towire_open_channel2(NULL,
-				   &chainparams->genesis_blockhash,
+				   chainparams_get_chainhash(chainparams),
 				   &state->channel_id,
 				   tx_state->feerate_per_kw_funding,
 				   state->feerate_per_kw_commitment,

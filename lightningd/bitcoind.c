@@ -560,6 +560,20 @@ static void getchaininfo_callback(const char *buf, const jsmntok_t *toks,
 		bitcoin_plugin_error(call->bitcoind, buf, resulttok, "getchaininfo",
 				     "bad 'result' field: %s", err);
 
+	if (streq(chainparams->network_name, "xbt-regtest")) {
+		bool active;
+		u32 activation;
+
+		err = json_scan(tmpctx, buf, resulttok,
+				"{blake2b_active:%,blake2b_activation_height:%}",
+				JSON_SCAN(json_to_bool, &active),
+				JSON_SCAN(json_to_u32, &activation));
+		if (err || !active || activation != 1)
+			bitcoin_plugin_error(call->bitcoind, buf, resulttok,
+					     "getchaininfo",
+					     "backend has not verified the xbt-regtest fork schedule");
+	}
+
 	call->cb(call->bitcoind, chain, headers, blocks, ibd,
 		 call->cb_arg);
 

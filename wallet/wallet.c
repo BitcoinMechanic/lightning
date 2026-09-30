@@ -4785,6 +4785,8 @@ void wallet_htlc_sigs_add(struct wallet *w, u64 channel_id,
 
 bool wallet_sanity_check(struct wallet *w)
 {
+	/* The historical DB name remains genesis_hash, but this value is the
+	 * Lightning network identity, including a fork's explicit override. */
 	struct bitcoin_blkid chainhash;
 	struct db_stmt *stmt = db_prepare_v2(
 	    w->db, SQL("SELECT blobval FROM vars WHERE name='genesis_hash'"));
@@ -4794,7 +4796,7 @@ bool wallet_sanity_check(struct wallet *w)
 		db_col_sha256d(stmt, "blobval", &chainhash.shad);
 		tal_free(stmt);
 		if (!bitcoin_blkid_eq(&chainhash,
-				      &chainparams->genesis_blockhash)) {
+				      chainparams_get_chainhash(chainparams))) {
 			log_broken(w->log, "Wallet blockchain hash does not "
 					   "match network blockchain hash: %s "
 					   "!= %s. "
@@ -4803,7 +4805,7 @@ bool wallet_sanity_check(struct wallet *w)
 				   fmt_bitcoin_blkid(w,
 						  &chainhash),
 				   fmt_bitcoin_blkid(w,
-						  &chainparams->genesis_blockhash),
+						  chainparams_get_chainhash(chainparams)),
 				   chainparams_get_network_names(tmpctx));
 			return false;
 		}
@@ -4813,7 +4815,7 @@ bool wallet_sanity_check(struct wallet *w)
 		 * that we are running */
 		stmt = db_prepare_v2(w->db, SQL("INSERT INTO vars (name, blobval) "
 						"VALUES ('genesis_hash', ?);"));
-		db_bind_sha256d(stmt, &chainparams->genesis_blockhash.shad);
+		db_bind_sha256d(stmt, &chainparams_get_chainhash(chainparams)->shad);
 		db_exec_prepared_v2(take(stmt));
 	}
 

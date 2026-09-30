@@ -1,6 +1,7 @@
 #include "config.h"
 #include <assert.h>
 #include <bitcoin/block.h>
+#include <bitcoin/block_blake2b.h>
 #include <bitcoin/tx.h>
 #include <ccan/mem/mem.h>
 #include <ccan/str/hex/hex.h>
@@ -11,7 +12,7 @@ static const u8 *pull(const u8 **cursor, size_t *max, void *copy, size_t n)
 {
 	const u8 *p = *cursor;
 
-	if (*max < n) {
+	if (!p || *max < n) {
 		*cursor = NULL;
 		*max = 0;
 		/* Just make sure we don't leak uninitialized mem! */
@@ -142,21 +143,25 @@ bitcoin_block_from_hex(const tal_t *ctx, const struct chainparams *chainparams,
 	struct bitcoin_block *b;
 	u8 *linear_tx;
 	const u8 *p;
-	size_t len, i, num, templen;
+	size_t len, i, templen;
+	u64 num;
 	struct sha256_ctx shactx;
-	bool is_dynafed;
+	bool is_dynafed, is_header_v2 = false;
 	u32 height;
 
 	if (hexlen && hex[hexlen-1] == '\n')
 		hexlen--;
 
 	/* Set up the block for success. */
-	b = tal(ctx, struct bitcoin_block);
+	b = talz(ctx, struct bitcoin_block);
 
 	/* De-hex the array. */
 	len = hex_data_size(hexlen);
-	p = linear_tx = tal_arr(ctx, u8, len);
+	p = linear_tx = tal_arr(b, u8, len);
 	if (!hex_decode(hex, hexlen, linear_tx, len))
+		return tal_free(b);
+	/* Enough for the common fields and each format's fixed prefix. */
+	if (len < (is_elements(chainparams) ? 76 : 80))
 		return tal_free(b);
 
 	sha256_init(&shactx);
@@ -202,14 +207,54 @@ bitcoin_block_from_hex(const tal_t *ctx, const struct chainparams *chainparams,
 
 		b->hdr.nonce = pull_le32(&p, &len);
 		sha256_le32(&shactx, b->hdr.nonce);
+
+		is_header_v2 = chainparams->has_blake2b_headers
+			&& (b->hdr.version & BITCOIN_HEADER_V2_FLAG);
+		if (is_header_v2) {
+			le32 offset;
+
+			if (!pull(&p, &len, NULL, BITCOIN_HEADER_V2_SIZE - 80))
+				return tal_free(b);
+			if (!bitcoin_block_blake2b_hash(linear_tx,
+						       BITCOIN_HEADER_V2_SIZE,
+						       &b->hdr.hash))
+				return tal_free(b);
+			/* Hash original wire bytes, then expose Knots' logical time.
+			 * Unsigned addition deliberately wraps at 32 bits. */
+			if (linear_tx[110] & BITCOIN_HEADER_V2_TIME_OFFSET) {
+				memcpy(&offset, linear_tx + 104, sizeof(offset));
+				b->hdr.timestamp += le32_to_cpu(offset);
+			}
+		}
 	}
-	sha256_double_done(&shactx, &b->hdr.hash.shad);
+	if (!p)
+		return tal_free(b);
+	if (!is_header_v2)
+		sha256_double_done(&shactx, &b->hdr.hash.shad);
 
 	num = pull_varint(&p, &len);
+	/* Every serialized transaction occupies bytes.  Bound allocations by
+	 * remaining input and size_t before passing an untrusted u64 to tal. */
+	if (!p || num > len
+	    || num > SIZE_MAX / sizeof(*b->tx)
+	    || num > SIZE_MAX / sizeof(*b->txids))
+		return tal_free(b);
+	if (is_header_v2) {
+		le16 txcount;
+		memcpy(&txcount, linear_tx + 108, sizeof(txcount));
+		if (num != le16_to_cpu(txcount))
+			return tal_free(b);
+	}
 	b->tx = tal_arr(b, struct bitcoin_tx *, num);
 	b->txids = tal_arr(b, struct bitcoin_txid, num);
 	for (i = 0; i < num; i++) {
 		b->tx[i] = pull_bitcoin_tx_only(b->tx, &p, &len);
+		if (!b->tx[i])
+			return tal_free(b);
+		/* Wally can decode partial transactions, but cannot serialize
+		 * them for a txid. They cannot occur in a valid block. */
+		if (!b->tx[i]->wtx->num_inputs || !b->tx[i]->wtx->num_outputs)
+			return tal_free(b);
 		b->tx[i]->chainparams = chainparams;
 		bitcoin_txid(b->tx[i], &b->txids[i]);
 	}
@@ -267,13 +312,13 @@ void towire_bitcoin_blkid(u8 **pptr, const struct bitcoin_blkid *blkid)
 
 void towire_chainparams(u8 **cursor, const struct chainparams *chainparams)
 {
-	towire_bitcoin_blkid(cursor, &chainparams->genesis_blockhash);
+	towire_bitcoin_blkid(cursor, chainparams_get_chainhash(chainparams));
 }
 
 void fromwire_chainparams(const u8 **cursor, size_t *max,
 			  const struct chainparams **chainparams)
 {
-	struct bitcoin_blkid genesis;
-	fromwire_bitcoin_blkid(cursor, max, &genesis);
-	*chainparams = chainparams_by_chainhash(&genesis);
+	struct bitcoin_blkid chain_hash;
+	fromwire_bitcoin_blkid(cursor, max, &chain_hash);
+	*chainparams = chainparams_by_chainhash(&chain_hash);
 }

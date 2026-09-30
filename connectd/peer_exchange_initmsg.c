@@ -39,15 +39,6 @@ struct early_peer {
 	struct timemono starttime;
 };
 
-static bool contains_common_chain(struct bitcoin_blkid *chains)
-{
-	for (size_t i = 0; i < tal_count(chains); i++) {
-		if (bitcoin_blkid_eq(&chains[i], &chainparams->genesis_blockhash))
-			return true;
-	}
-	return false;
-}
-
 /* Here in case we need to read another message. */
 static struct io_plan *read_init(struct io_conn *conn, struct early_peer *peer);
 
@@ -93,8 +84,9 @@ static struct io_plan *peer_init_received(struct io_conn *conn,
 	 *  - upon receiving `networks` containing no common chains
 	 *    - MAY close the connection.
 	 */
-	if (tlvs->networks) {
-		if (!contains_common_chain(tlvs->networks)) {
+	if (tlvs->networks || chainparams->lightning_chainhash) {
+		if (!chainparams_accepts_peer_networks(chainparams, tlvs->networks,
+						     tal_count(tlvs->networks))) {
 			status_peer_debug(&peer->id,
 			                  "No common chain with this peer '%s', closing",
 			                  tal_hex(tmpctx, msg));
@@ -238,7 +230,7 @@ struct io_plan *peer_exchange_initmsg(struct io_conn *conn,
 	 */
 	tlvs = tlv_init_tlvs_new(tmpctx);
 	tlvs->networks = tal_dup_arr(tlvs, struct bitcoin_blkid,
-				     &chainparams->genesis_blockhash, 1, 0);
+				     chainparams_get_chainhash(chainparams), 1, 0);
 
 	/* set optional tlv `remote_addr` on incoming IP connections */
 	tlvs->remote_addr = NULL;

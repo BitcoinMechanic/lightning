@@ -244,7 +244,7 @@ const u8 **maybe_create_query_responses(const tal_t *ctx,
 		 */
 		/* FIXME: We consider ourselves to have complete knowledge. */
 		u8 *end = towire_reply_short_channel_ids_end(peer,
-							     &chainparams->genesis_blockhash,
+							     chainparams_get_chainhash(chainparams),
 							     true);
 		tal_arr_expand(&msgs, end);
 
@@ -314,7 +314,7 @@ void handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	 *   - if does not maintain up-to-date channel information for `chain_hash`:
 	 *     - MUST set `full_information` to 0.
 	 */
-	if (!bitcoin_blkid_eq(&chainparams->genesis_blockhash, &chain)) {
+	if (!bitcoin_blkid_eq(chainparams_get_chainhash(chainparams), &chain)) {
 		status_peer_debug(&peer->id,
 				  "sent query_short_channel_ids chainhash %s",
 				  fmt_bitcoin_blkid(tmpctx, &chain));
@@ -537,7 +537,7 @@ static u8 *make_reply_channel_range(const tal_t *ctx,
 	 *   `reply_channel_range`.
 	 */
 	return towire_reply_channel_range(ctx,
-					  &chainparams->genesis_blockhash,
+					  chainparams_get_chainhash(chainparams),
 					  first_blocknum,
 					  number_of_blocks,
 					  final, encoded_scids, tlvs);
@@ -739,7 +739,7 @@ void handle_query_channel_range(struct peer *peer, const u8 *msg)
 		query_option_flags = 0;
 
 	/* Unknown chain_hash: reply with sync_complete=false. */
-	if (!bitcoin_blkid_eq(&chainparams->genesis_blockhash, &chain_hash)) {
+	if (!bitcoin_blkid_eq(chainparams_get_chainhash(chainparams), &chain_hash)) {
 		status_peer_debug(&peer->id,
 				  "query_channel_range with chainhash %s",
 				  fmt_bitcoin_blkid(tmpctx, &chain_hash));

@@ -666,7 +666,7 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
 	 *   - if the specified `chain_hash` is unknown to the receiver:
 	 *     - MUST ignore the message.
 	 */
-	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash))
+	if (!bitcoin_blkid_eq(&chain_hash, chainparams_get_chainhash(chainparams)))
 		return NULL;
 
 	/* Immediately discard claims of ancient channels */
@@ -1049,7 +1049,7 @@ const char *gossmap_manage_channel_update(const tal_t *ctx,
 	 *   the specified chain):
 	 *     - MUST ignore the channel update.
 	 */
-	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash)) {
+	if (!bitcoin_blkid_eq(&chain_hash, chainparams_get_chainhash(chainparams))) {
 		status_debug("wrong chain for update %s", tal_hex(tmpctx, update));
 		return NULL;
 	}

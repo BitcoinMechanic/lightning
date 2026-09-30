@@ -345,7 +345,7 @@ static u8 *funder_channel_start(struct state *state, u8 channel_flags,
 	open_tlvs->channel_type = state->channel_type->features;
 
 	msg = towire_open_channel(NULL,
-				  &chainparams->genesis_blockhash,
+				  chainparams_get_chainhash(chainparams),
 				  &state->channel_id,
 				  state->funding_sats,
 				  state->push_msat,
@@ -920,7 +920,7 @@ static u8 *fundee_channel(struct state *state, const u8 *open_channel_msg)
 	 *  - the `chain_hash` value is set to a hash of a chain
 	 *  that is unknown to the receiver.
 	 */
-	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash)) {
+	if (!bitcoin_blkid_eq(&chain_hash, chainparams_get_chainhash(chainparams))) {
 		negotiation_failed(state,
 				   "Unknown chain-hash %s",
 				   fmt_bitcoin_blkid(tmpctx, &chain_hash));

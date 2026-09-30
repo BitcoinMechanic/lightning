@@ -479,6 +479,33 @@ static struct command_result *getchaininfo(struct command *cmd,
 	if (err)
 		return command_err(cmd, res, tal_fmt(tmpctx, "bad JSON: %s", err));
 
+	/* This experimental network has a fixed local test schedule. Check the
+	 * backend on every poll, not just initialization: both BTC and XBT report
+	 * "regtest", so that name alone cannot identify this chain. */
+	if (streq(chainparams->network_name, "xbt-regtest")) {
+		struct bcli_result *deployment;
+		const jsmntok_t *dtoks;
+		u32 activation;
+		bool active;
+
+		if (!streq(chain, "regtest"))
+			return command_err(cmd, res, "xbt-regtest requires a regtest backend");
+		deployment = run_bitcoin_cli(cmd, cmd->plugin, "getdeploymentinfo", NULL);
+		if (deployment->exitstatus != 0)
+			return command_err(cmd, deployment, "xbt-regtest requires Knots getdeploymentinfo");
+		dtoks = json_parse_simple(deployment->output, deployment->output,
+					  deployment->output_len);
+		if (!dtoks)
+			return command_err(cmd, deployment, "invalid deployment JSON");
+		err = json_scan(tmpctx, deployment->output, dtoks,
+				"{blake2b:{height:%,active:%}}",
+				JSON_SCAN(json_to_number, &activation),
+				JSON_SCAN(json_to_bool, &active));
+		if (err || activation != 1 || !active)
+			return command_err(cmd, deployment,
+				"xbt-regtest requires Knots with -testactivationheight=blake2b@1");
+	}
+
 	if (bitcoind->dev_ignore_ibd)
 		ibd = false;
 
@@ -487,6 +514,12 @@ static struct command_result *getchaininfo(struct command *cmd,
 	json_add_u32(response, "headercount", headers);
 	json_add_u32(response, "blockcount", blocks);
 	json_add_bool(response, "ibd", ibd);
+	if (streq(chainparams->network_name, "xbt-regtest")) {
+		/* Report the backend checks above to lightningd. Other backend
+		 * plugins must provide the same verified declaration. */
+		json_add_bool(response, "blake2b_active", true);
+		json_add_u32(response, "blake2b_activation_height", 1);
+	}
 
 	return command_finished(cmd, response);
 }
@@ -740,6 +773,9 @@ static void parse_getnetworkinfo_result(struct plugin *p, const char *buf)
 	u32 min_version = 230000;
 	const char *err;
 
+	if (chainparams->has_blake2b_headers)
+		min_version = chainparams->cli_min_supported_version;
+
 	result = json_parse_simple(NULL, buf, strlen(buf));
 	if (!result)
 		plugin_err(p, "Invalid response to '%s': '%s'. Can not "
@@ -815,10 +851,12 @@ static void memleak_mark_bitcoind(struct plugin *p, struct htable *memtable)
 static const char *init(struct command *init_cmd, const char *buffer UNUSED,
 			const jsmntok_t *config UNUSED)
 {
+	if (streq(chainparams->network_name, "xbt-regtest") && !bitcoind->rpcport)
+		bitcoind->rpcport = tal_fmt(bitcoind, "%i", chainparams->rpc_port);
 	wait_and_check_bitcoind(init_cmd->plugin);
 
 	/* Usually we fake up fees in regtest */
-	if (streq(chainparams->network_name, "regtest"))
+	if (streq(chainparams->bip70_name, "regtest"))
 		bitcoind->fake_fees = !bitcoind->dev_no_fake_fees;
 	else
 		bitcoind->fake_fees = false;

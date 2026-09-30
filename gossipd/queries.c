@@ -127,7 +127,7 @@ bool query_short_channel_ids(struct daemon *daemon,
 		tlvs = NULL;
 
 	msg = towire_query_short_channel_ids(NULL,
-					     &chainparams->genesis_blockhash,
+					     chainparams_get_chainhash(chainparams),
 					     encoded, tlvs);
 	queue_peer_msg(daemon, &peer->id, take(msg));
 	peer->scid_query_outstanding = true;
@@ -202,7 +202,7 @@ const u8 *handle_reply_channel_range(struct peer *peer, const u8 *msg)
 					 tal_hex(tmpctx, msg));
 	}
 
-	if (!bitcoin_blkid_eq(&chainparams->genesis_blockhash, &chain)) {
+	if (!bitcoin_blkid_eq(chainparams_get_chainhash(chainparams), &chain)) {
 		return towire_warningfmt(peer, NULL,
 					 "reply_channel_range for bad chain: %s",
 					 tal_hex(tmpctx, msg));
@@ -373,7 +373,7 @@ const u8 *handle_reply_short_channel_ids_end(struct peer *peer, const u8 *msg)
 					 tal_hex(tmpctx, msg));
 	}
 
-	if (!bitcoin_blkid_eq(&chainparams->genesis_blockhash, &chain)) {
+	if (!bitcoin_blkid_eq(chainparams_get_chainhash(chainparams), &chain)) {
 		return towire_warningfmt(peer, NULL,
 					 "reply_short_channel_ids_end for bad chain: %s",
 					 tal_hex(tmpctx, msg));
@@ -419,7 +419,7 @@ bool query_channel_range(struct daemon *daemon,
 			  "sending query_channel_range for blocks %u+%u",
 			  first_blocknum, number_of_blocks);
 
-	msg = towire_query_channel_range(NULL, &chainparams->genesis_blockhash,
+	msg = towire_query_channel_range(NULL, chainparams_get_chainhash(chainparams),
 					 first_blocknum, number_of_blocks,
 					 tlvs);
 	queue_peer_msg(peer->daemon, &peer->id, take(msg));

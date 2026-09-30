@@ -223,7 +223,7 @@ static void disable_gossip_stream(struct seeker *seeker, struct peer *peer)
 
 	/* This is allowed even if they don't understand it (odd) */
 	msg = towire_gossip_timestamp_filter(NULL,
-					     &chainparams->genesis_blockhash,
+					     chainparams_get_chainhash(chainparams),
 					     UINT32_MAX,
 					     UINT32_MAX);
 	queue_peer_msg(peer->daemon, &peer->id, take(msg));
@@ -253,7 +253,7 @@ static void enable_gossip_stream(struct seeker *seeker, struct peer *peer,
 
 	/* This is allowed even if they don't understand it (odd) */
 	msg = towire_gossip_timestamp_filter(NULL,
-					     &chainparams->genesis_blockhash,
+					     chainparams_get_chainhash(chainparams),
 					     start,
 					     UINT32_MAX);
 	queue_peer_msg(peer->daemon, &peer->id, take(msg));

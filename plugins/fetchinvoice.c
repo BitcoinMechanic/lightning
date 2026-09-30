@@ -1067,7 +1067,7 @@ struct command_result *json_fetchinvoice(struct command *cmd,
 	/* We already checked that we're compatible chain, in param_offer */
 	if (!streq(chainparams->network_name, "bitcoin")) {
 		invreq->invreq_chain = tal_dup(invreq, struct bitcoin_blkid,
-					       &chainparams->genesis_blockhash);
+					       chainparams_get_chainhash(chainparams));
 	}
 
 	/* BOLT #12:
@@ -1223,7 +1223,7 @@ struct command_result *json_cancelrecurringinvoice(struct command *cmd,
 	/* We already checked that we're compatible chain, in param_offer */
 	if (!streq(chainparams->network_name, "bitcoin")) {
 		invreq->invreq_chain = tal_dup(invreq, struct bitcoin_blkid,
-					       &chainparams->genesis_blockhash);
+					       chainparams_get_chainhash(chainparams));
 	}
 
 	/* BOLT #12:

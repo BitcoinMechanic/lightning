@@ -925,7 +925,7 @@ static void handle_gossip_timestamp_filter_in(struct peer *peer, const u8 *msg)
 		return;
 	}
 
-	if (!bitcoin_blkid_eq(&chainparams->genesis_blockhash, &chain_hash)) {
+	if (!bitcoin_blkid_eq(chainparams_get_chainhash(chainparams), &chain_hash)) {
 		send_warning(peer, "gossip_timestamp_filter for bad chain: %s",
 			     tal_hex(tmpctx, msg));
 		return;
