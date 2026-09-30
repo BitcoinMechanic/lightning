@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 
 from smoke_regtest import Lab, wait_until
+from deadline_guard import protect
 
 
 def save(path, state):
@@ -134,6 +135,7 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
         if payment['status'] == 'pending' and not payment.get('payment_preimage'):
             # A later invocation reconciles again. Neither resend nor release
             # (nor fail) BTC on a timeout or a still-pending outgoing payment.
+            protect(path, state, Lab.rpc, save)
             return {'phase': 'outgoing_started', 'outcome': 'pending'}
         if (payment['status'] == 'failed' and not payment.get('payment_preimage')
                 and state.get('quote_gate')):

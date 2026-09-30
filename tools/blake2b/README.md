@@ -299,8 +299,13 @@ Use `swap_regtest.py --onchain-preimage` for XBT-side on-chain settlement, or
 `swap_regtest.py --btc-deadline` for the incoming BTC-side claim (with the same
 `--bitcoind` and `--bitcoin-cli` arguments). The latter starts XBT while the
 incoming BTC margin is valid, then advances only BTC to 30 blocks remaining.
-The harness force-closes the BTC operator's channel and confirms its unresolved
-HTLC before allowing the XBT receiver to resume native invoice settlement.
+The fixture enables `btc_deadline_guard` in controller state. Pending
+reconciliation leaves the BTC channel open at 31 blocks and requests a unilateral
+close at 30. It durably records the exact channel and HTLC binding before the
+close RPC. A fresh controller reconciles the channel state without another close
+once CLN reports the unilateral close underway. Missing or mismatched targets
+stop recovery for inspection. The harness confirms the unresolved BTC HTLC
+before allowing the XBT receiver to resume native invoice settlement.
 The controller recovers XBT's preimage from its completed payment and releases
 the BTC hook; the test verifies a confirmed BTC HTLC-success witness, payer-side
 on-chain preimage extraction, and the operator's CSV-delayed wallet sweep.
@@ -308,5 +313,9 @@ XBT channel balances must match the quote, and repeat recovery must not resend.
 
 This is a controlled recovery scenario with a cooperative XBT receiver after
 BTC closure. The 30-block close point is a fixture choice, not a production
-timelock recommendation or an automatic deadline policy. The regression case
-is `swap-btc-deadline`.
+timelock recommendation. The guard runs on controller invocation; it is not a
+background watcher and needs repeated invocation while XBT is pending. Closing
+BTC does not prevent loss if XBT reveals its preimage only after the BTC claim
+deadline. No chain-stall or reorg guarantee is implied. The regression case is
+`swap-btc-deadline`; `test_deadline_guard.py` also checks interrupted-close
+recovery and refuses wrong networks, quote bindings, and HTLC identities.

@@ -7,7 +7,7 @@ from smoke_regtest import wait_until
 
 def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
               mine, rpc, confirmed_outputs, amount_sat=100000, standalone=True,
-              release=None):
+              release=None, close=None):
     amount_btc = Decimal(amount_sat) / Decimal(100000000)
     if preimage is None and release is None:
         raise ValueError('claim needs a preimage or a release callback')
@@ -17,7 +17,8 @@ def run_claim(backend, alice, bob, funding, invoice, preimage, expiry,
     if not 1 <= delay <= 2016:
         raise AssertionError(f'unexpected CSV delay {delay}')
     # An unresolved HTLC prevents mutual closing. Bob publishes his commitment.
-    close = rpc(bob, 'close', alice['id'], 1)
+    if close is None:
+        close = rpc(bob, 'close', alice['id'], 1)
     if close['type'] != 'unilateral':
         raise AssertionError(close)
     wait_until(lambda: set(close['txids']).intersection(rpc(backend, 'getrawmempool')))

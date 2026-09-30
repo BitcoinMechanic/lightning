@@ -1,7 +1,7 @@
 """BTC deadline/claim fixture with an unresolved outgoing XBT payment.
 
-The harness explicitly closes BTC with 30 blocks remaining; this is not an
-automatic deadline watcher. XBT height stays fixed and the receiver cooperates
+Pending controller reconciliation closes BTC with 30 blocks remaining.
+The harness invokes the controller; there is no background polling service. XBT height stays fixed and the receiver cooperates
 after the BTC commitment confirms. No cross-chain stall guarantee is implied.
 """
 import json
@@ -48,7 +48,7 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     xbt_height = rpc(xbt, 'getblockcount')
     quote_before = plugin.with_suffix('.quotes.json').read_bytes()
     path = lab.root / 'swap-state.json'
-    save(path, {'phase': 'prepared', 'quote_gate': True, 'payment_hash': payment_hash,
+    save(path, {'phase': 'prepared', 'quote_gate': True, 'btc_deadline_guard': True, 'payment_hash': payment_hash,
                 'payment_secret': invoice['payment_secret'], 'xbt_invoice': invoice['bolt11'],
                 'btc_binding': binding, 'xbt_amount_msat': 200000000,
                 'xbt_cli': swap_xbt['cli'], 'btc_cli': swap_btc['cli'],
@@ -81,11 +81,26 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     remaining = incoming['expiry'] - rpc(btc, 'getblockcount')
     if remaining <= 30:
         raise AssertionError('insufficient initial BTC margin for deadline fixture')
-    mine(remaining - 30)
+    mine(remaining - 31)
+    assert_pending()
+    if channel(swap_btc)['state'] != 'CHANNELD_NORMAL':
+        raise AssertionError('controller closed before threshold')
+    print('PASS: controller leaves BTC channel open at 31 blocks remaining', flush=True)
+    mine(1)
     if incoming['expiry'] - rpc(btc, 'getblockcount') != 30 or rpc(xbt, 'getblockcount') != xbt_height:
         raise AssertionError('unexpected chain heights after BTC deadline advancement')
+    triggered = subprocess.run(command, text=True, capture_output=True, timeout=60)
+    if triggered.returncode or json.loads(triggered.stdout) != {'phase': 'outgoing_started', 'outcome': 'pending'}:
+        raise AssertionError(f'deadline controller failed: {triggered.stdout}\n{triggered.stderr}')
+    protected = json.loads(path.read_text())
+    if protected['btc_close_intent']['channel_id'] != incoming_channel['channel_id']:
+        raise AssertionError('controller closed the wrong BTC channel')
+    if protected['btc_close_result']['type'] != 'unilateral' or 'preimage' in protected:
+        raise AssertionError('expected unilateral close without preimage')
+    wait_until(lambda: channel(swap_btc)['state'] == 'AWAITING_UNILATERAL', swap_btc['proc'])
+    before = path.read_bytes()
     assert_pending()
-    print('PASS: BTC advanced to 30 blocks remaining with XBT unresolved; controller preserved both payments', flush=True)
+    print('PASS: controller closed bound BTC channel at 30 blocks; fresh controller preserved pending payments and close checkpoint', flush=True)
     outgoing_before = rpc(swap_xbt, 'listsendpays')['payments']
 
     def release_after_commitment():
@@ -110,7 +125,8 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     claim = run_claim(btc, payer, swap_btc, funding,
                       {'bolt11': btc_invoice, 'payment_hash': payment_hash}, None,
                       incoming['expiry'], mine, rpc, confirmed_outputs,
-                      standalone=False, release=release_after_commitment)
+                      standalone=False, release=release_after_commitment,
+                      close=protected['btc_close_result'])
     pay_process.wait(timeout=30)
     if pay_process.returncode:
         raise AssertionError('BTC payer failed: ' + pay_log.read_text())
@@ -141,4 +157,4 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     if rpc(swap_xbt, 'listsendpays')['payments'] != outgoing:
         raise AssertionError('repeat recovery changed XBT payment history')
     print('PASS: XBT settled off-chain; BTC operator claim and CSV sweep confirmed; no additional XBT attempt', flush=True)
-    print('BTC deadline swap test OK (harness-triggered BTC close; BTC fees apply; regtest only)', flush=True)
+    print('BTC deadline swap test OK (controller-triggered BTC close; BTC fees apply; regtest only)', flush=True)
