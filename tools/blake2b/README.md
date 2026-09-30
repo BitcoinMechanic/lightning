@@ -348,6 +348,38 @@ includes `swap-watch-deadline` and `unit-swap-watch`.
 
 ## Live XBT chain: offline observation only
 
+For a second node under the same operator's control, the launcher also accepts
+`--local-peer-port=19835`. This replaces offline mode with an explicit
+`127.0.0.1` listener, disables automatic default listeners and discovered-address
+announcement, and sets the gossip-seeker peer target to zero. Use a separate
+data directory, for example `$HOME/cln-xbt-peer`. The default launch remains
+offline. This option does not connect peers or create/fund a channel. It is
+not a firewall for outbound connections; known channel peers can reconnect.
+For the planned local-channel exercise, create an unannounced channel only
+after checking both node identities and their connection.
+
+### Wallet coinbase relay policy
+
+The live `xbt` wallet requires 6480-block coinbase maturity to match the pinned
+Knots 29.4.2 mempool policy. `validation.cpp` passes `CoinbaseMaturityLong` with
+a start height of zero to `CheckTxInputs` during mempool admission. Consequently
+this policy covers ALL coinbases and does not switch off at height 979920.
+This differs from block consensus, whose extended-maturity enforcement applies
+at spend heights 973440 through 979919 to coinbases mined from 973440 onward.
+
+A coinbase mined at H becomes selectable at tip H+6479 for inclusion at H+6480.
+The existing shared wallet check covers normal coin selection, fee-input
+selection, and `listfunds`' immature status. Non-coinbase outputs and the other
+networks' default 100-block behavior are unchanged. The native boundary test is
+`common/test/run-xbt-maturity`; build it before running the regression catalog.
+
+Fee review: live XBT uses real `estimatesmartfee` results rather than regtest's
+fake rates. bcli floors successful estimates at the larger of `mempoolminfee`
+and `minrelaytxfee`; lightningd converts sat/kVB to its internal sat/kw units.
+Missing estimates remain unavailable. Check the live node's reported rates
+and Knots estimates before constructing any funding or withdrawal transaction.
+This change does not establish full live wallet-spend or channel safety.
+
 `--network=xbt` selects the experimental live-chain configuration. It retains
 Bitcoin's genesis, `bc` on-chain addresses, and mainnet BIP32 versions, while
 using `lnxbt` invoices and a separate experimental Lightning chain identity.

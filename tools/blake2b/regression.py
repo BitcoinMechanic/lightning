@@ -36,6 +36,7 @@ def cases():
                            (sys.executable, str(HERE / ('test_' + name + '.py')), '-v')))
     for name in ('run-block_blake2b', 'run-bitcoin_block_from_hex'):
         result.append(Case(name, (str(ROOT / 'bitcoin/test' / name),)))
+    result.append(Case('run-xbt-maturity', (str(ROOT / 'common/test/run-xbt-maturity'),)))
     result.append(Case('isolation', (sys.executable, str(HERE / 'smoke_regtest.py')), True))
     for mode in ('', 'force-close', 'htlc-timeout', 'preimage-claim'):
         result.append(Case('funded-' + (mode or 'mutual-close'),

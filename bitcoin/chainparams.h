@@ -61,6 +61,9 @@ struct chainparams {
 	const u32 blake2b_activation_height;
 	/* RPC-display hash at activation, NULL for private regtest. */
 	const char *blake2b_checkpoint;
+	/* Wallet relay policy, not a consensus activation schedule. Zero uses
+	 * Bitcoin's historical 100-block maturity. */
+	const u32 wallet_coinbase_maturity;
 	const u8 *fee_asset_tag;
 };
 

@@ -1,5 +1,7 @@
 #include "config.h"
+#include <bitcoin/chainparams.h>
 #include <common/utxo.h>
+#include <common/utils.h>
 
 size_t utxo_spend_weight(const struct utxo *utxo, size_t min_witness_weight)
 {
@@ -20,15 +22,20 @@ size_t utxo_spend_weight(const struct utxo *utxo, size_t min_witness_weight)
 u32 utxo_is_immature(const struct utxo *utxo, u32 blockheight)
 {
 	if (utxo->is_in_coinbase) {
+		u32 maturity = chainparams->wallet_coinbase_maturity
+			? chainparams->wallet_coinbase_maturity : 100;
+		u64 eligible_tip;
 		/* We got this from a block, it must have a known
 		 * blockheight. */
 		assert(utxo->blockheight);
 
-		if (blockheight < *utxo->blockheight + 100)
-			return *utxo->blockheight + 99 - blockheight;
-
-		else
+		/* Mempool transactions target the NEXT block: a coinbase at H
+		 * is relayable once the tip reaches H + maturity - 1. */
+		eligible_tip = (u64)*utxo->blockheight + maturity - 1;
+		if (blockheight >= eligible_tip)
 			return 0;
+		return eligible_tip - blockheight > UINT32_MAX
+			? UINT32_MAX : eligible_tip - blockheight;
 	} else {
 		/* Non-coinbase outputs are always mature. */
 		return 0;

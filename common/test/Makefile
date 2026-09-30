@@ -179,3 +179,5 @@ common/test/run-close_tx:			\
 	wire/towire.o
 
 check-units: $(COMMON_TEST_PROGRAMS:%=unittest/%)
+
+common/test/run-xbt-maturity: libcommon.a

@@ -116,6 +116,9 @@ const struct chainparams networks[] = {
      .is_elements = false,
      .has_blake2b_headers = true,
      .blake2b_activation_height = 961640,
+     /* Knots 29.4.2 mempool CheckTxInputs applies long maturity to ALL
+      * coinbases, even outside the consensus enforcement window. */
+     .wallet_coinbase_maturity = 6480,
      .blake2b_checkpoint = "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb"},
     {.network_name = "regtest",
      .onchain_hrp = "bcrt",

@@ -88,7 +88,9 @@ size_t utxo_spend_weight(const struct utxo *utxo, size_t min_witness_weight);
 /**
  * Determine how many blocks until a UTXO becomes mature.
  *
- * Returns 0 for non-coinbase outputs or the number of blocks to mature.
+ * Returns 0 for non-coinbase outputs or the number of tip advancements until
+ * the output is eligible for relay into the next block. Uses the selected
+ * network's wallet coinbase-maturity policy.
  */
 u32 utxo_is_immature(const struct utxo *utxo, u32 blockheight);
 #endif /* LIGHTNING_COMMON_UTXO_H */
