@@ -110,3 +110,70 @@ The existing 288-block admission minimum, 300-block invoice CLTV and 72-block
 BTC close threshold remain experimental cross-chain timing policy. Keep both
 operators and the watcher running. Confirm payer completion and receiver paid
 status; `btc_released` records intent, not final peer settlement.
+
+## Foreground receiving command
+
+`receive_workflow.py receive` combines receiver invoice creation, market quote
+publication, BTC invoice export, watcher startup and receiver receipt checking:
+
+```
+.venv/bin/python tools/blake2b/receive_workflow.py receive \
+  --config "$HOME/cln-live-pilot/operators-market.json" \
+  --receiver-dir "$HOME/cln-xbt-peer" \
+  --directory "$HOME/cln-live-pilot/receive-1" --xbt-sats 350000
+```
+
+Keep the process running. When it prints `invoice_ready`, copy the invoice
+locally from a second terminal:
+
+```
+cat "$HOME/cln-live-pilot/receive-1/btc-invoice.txt"
+```
+
+The quote retains its two-minute expiry. This command does not pay BTC for
+you. Its output omits hashes, secrets, node IDs and invoice text; repeated
+identical waiting messages are suppressed. On completion it checks the
+receiver invoice and reports `receiver_paid` and `received_xbt_sats`.
+Continue to verify completion in the BTC payer wallet as well.
+
+A durable `request.json` is written before the receiver invoice RPC, including
+a unique label. Retrying after a lost reply recovers that label. Resume with
+the exact same command, config, amount and directory: it reuses the invoice,
+quote and controller state. Changing the amount/config or copying a request
+to another directory is refused. The underlying service records live in the
+`swap` subdirectory; old manual workflows and records are unaffected.
+A stable lock serializes orchestration and the existing service lock serializes
+controller startup. Never delete request/state files or retry in a new directory
+when a payment may have been accepted. An unused expired quote needs deliberate
+replacement, not automatic repricing. Invoice creation itself does not spend.
+
+## Return XBT through the channel for testing
+
+This explicitly requested operation returns the received XBT principal toward
+the operator through the exact original channel, without exchanging currencies:
+
+```
+.venv/bin/python tools/blake2b/receive_workflow.py repay \
+  --directory "$HOME/cln-live-pilot/market-1" \
+  --receiver-dir "$HOME/cln-xbt-peer"
+```
+
+For swaps made with the new wrapper, use `receive-1/swap` as the directory.
+The amount is capped at both the original receipt and the receiver's current
+whole-satoshi spendable balance (maximum 500,000 sats). A channel reserve may
+prevent returning the entire receipt. It creates an operator invoice and uses
+one direct, zero-routing-fee sendpay attempt. Both XBT nodes must stay running.
+No new channel funding or on-chain transaction is requested.
+
+`repayment.json` journals the original identity, amount, label and send intent;
+original quote/controller files are not changed. Repeating against the same
+original directory reconciles that one attempt and never sends again. A crash
+between saving intent and submitting can leave an unknown result; it refuses
+an automatic retry. A pending result can be checked by repeating the same
+command; a failure or missing attempt needs inspection. Never delete or copy
+the record to force another send. Successful output verifies the operator's
+paid invoice and reports the actual `returned_xbt_sats`.
+
+Offline tests cover invoice-reply loss, workflow locking, private output,
+immutable requests, automatic receipt checks, repayment reserve limits,
+repeated completion, lost submission replies and ambiguous missing attempts.

@@ -250,7 +250,8 @@ def renew(directory):
     return report
 
 
-def serve(directory, stop):
+def serve(directory, stop, report=None):
+    report = emit if report is None else report
     data = json.loads((directory / 'quote.json').read_text())
     if data.get('renewal') and not data['renewal'].get('complete'):
         raise RuntimeError('finish pending renewal before running the service')
@@ -284,9 +285,9 @@ def serve(directory, stop):
                 raise RuntimeError('quote terminal without controller state; inspect nodes')
             elif data['terms']['expires_at'] <= int(time.time()):
                 raise RuntimeError('unpaid quote expired')
-            emit({'event': 'waiting_for_btc', 'payment_hash': payment_hash})
+            report({'event': 'waiting_for_btc', 'payment_hash': payment_hash})
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            emit({'event': 'rpc_retry', 'error': type(exc).__name__})
+            report({'event': 'rpc_retry', 'error': type(exc).__name__})
         stop.wait(1)
     if stop.is_set():
         return 0
@@ -296,12 +297,12 @@ def serve(directory, stop):
         try:
             result = reconcile(path)
             if result.get('outcome') == 'refused':
-                emit(result)
+                report(result)
                 return 1  # No spend. Keep binding for deliberate inspection/cleanup.
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             if json.loads(path.read_text())['phase'] == 'prepared':
                 raise  # Pre-spend RPC failure; safe to restart run.
-    return watch(path, stop=stop, emit=emit)
+    return watch(path, stop=stop, emit=report)
 
 
 def status(directory):
