@@ -1,7 +1,7 @@
 """Minimal unsigned BOLT11 fixture for signinvoice; BTC regtest only.
 
-Fixed at 100,000 sats, no MPP or routing hints. CLN supplies the signature.
-This is a test encoder, not an invoice service or a general BOLT11 library.
+Defaults to 100,000 sats; no MPP or routing hints. CLN supplies the signature.
+Used by the experimental regtest service, not a general BOLT11 library.
 """
 import time
 
@@ -52,7 +52,11 @@ def byte_words(raw):
     return words
 
 
-def unsigned_invoice(payment_hash, payment_secret):
+def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry=3600):
+    if type(amount_msat) is not int or not 0 < amount_msat <= 2100000000000000000:
+        raise ValueError('invalid BTC amount')
+    if type(expiry) is not int or not 0 < expiry <= 3600:
+        raise ValueError('invalid invoice expiry')
     raw_hash, raw_secret = bytes.fromhex(payment_hash), bytes.fromhex(payment_secret)
     if len(raw_hash) != 32 or len(raw_secret) != 32:
         raise ValueError('hash and secret must be 32 bytes')
@@ -68,8 +72,9 @@ def unsigned_invoice(payment_hash, payment_secret):
     tag('p', byte_words(raw_hash))
     tag('s', byte_words(raw_secret))
     tag('d', byte_words(b'Regtest swap: pay BTC, receive XBT'))
-    tag('x', uint_words(3600))
+    tag('x', uint_words(expiry))
     tag('c', uint_words(120))
     # Required variable-length onion and payment-secret features; no MPP.
     tag('9', uint_words((1 << 8) | (1 << 14)))
-    return encode('lnbcrt1m', words + [0] * 104)
+    hrp = 'lnbcrt1m' if amount_msat == 100000000 else 'lnbcrt' + str(amount_msat * 10) + 'p'
+    return encode(hrp, words + [0] * 104)

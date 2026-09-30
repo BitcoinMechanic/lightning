@@ -319,3 +319,29 @@ BTC does not prevent loss if XBT reveals its preimage only after the BTC claim
 deadline. No chain-stall or reorg guarantee is implied. The regression case is
 `swap-btc-deadline`; `test_deadline_guard.py` also checks interrupted-close
 recovery and refuses wrong networks, quote bindings, and HTLC identities.
+
+## Pending swap watcher
+
+For the interactive quote/run/status workflow and a funded lab that stays
+running, see [SERVICE.md](SERVICE.md).
+
+`swap_watch.py --state /absolute/path/to/swap-state.json --interval 1` runs in
+the foreground and repeatedly reconciles one already-started swap. Restart it
+with the same state path. It uses the controller's existing lock on every poll,
+waits when another controller is busy, and retries RPC errors without inferring
+payment failure. It refuses prepared states, never initiates a new payment,
+and exits with an error on invariant violations. SIGINT/SIGTERM stop polling;
+an in-flight controller invocation can finish before exit. Logs omit preimages.
+
+The watcher exits successfully at `btc_released` or `btc_failed`. These are
+controller intent checkpoints, not proof of final settlement. CLN must remain
+running to enforce on-chain contracts. The watcher does not install a service
+or restart itself. Deadline closure requires `btc_deadline_guard` enabled in
+the existing state; the experimental 30-block policy and chain-stall limits
+above still apply.
+
+`swap_regtest.py --watch-deadline` tests watcher SIGKILL/restart while XBT is
+pending, automatic BTC closure at 30 blocks, and automatic BTC release after
+XBT settlement. It reuses the confirmed on-chain claim and wallet sweep checks.
+Use the usual `--bitcoind` and `--bitcoin-cli` arguments. The regression catalog
+includes `swap-watch-deadline` and `unit-swap-watch`.

@@ -26,12 +26,13 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
         pay_invoice=False, quoted_invoice=False, reject_quotes=False, crash_after_btc=False,
         crash_while_pending=False, pending_failure=False, restart_pending=False,
         kill_pending=False, stale_timelock=False, concurrent=False, outgoing_binding=False,
-        onchain_preimage=False, onchain_timeout=False, btc_deadline=False):
+        onchain_preimage=False, onchain_timeout=False, btc_deadline=False, watch_deadline=False, service_demo=False, service_lab=False):
     restart_pending = restart_pending or kill_pending
     crash_while_pending = crash_while_pending or pending_failure or restart_pending
     quoted_invoice = quoted_invoice or crash_after_btc or crash_while_pending or stale_timelock or concurrent
     quoted_invoice = quoted_invoice or outgoing_binding or onchain_preimage or onchain_timeout
-    quoted_invoice = quoted_invoice or btc_deadline
+    btc_deadline = btc_deadline or watch_deadline
+    quoted_invoice = quoted_invoice or btc_deadline or service_demo or service_lab
     pay_invoice = pay_invoice or quoted_invoice
     btc = lab.node('knots-btc', False)
     xbt = lab.node('knots-xbt', True)
@@ -80,6 +81,15 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
     print('PASS: funded BTC payer -> operator and XBT operator -> receiver channels', flush=True)
     initial = {node['id']: channel(node)['to_us_msat']
                for node in (payer, swap_btc, swap_xbt, receiver)}
+
+    if service_lab:
+        from service_demo import interactive
+        interactive(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt)
+        return
+    if service_demo:
+        from service_demo import demo
+        demo(lab, payer, swap_btc, swap_xbt, receiver, initial)
+        return
 
     if reject_quotes:
         from quote_rejections import run_rejections
@@ -181,7 +191,8 @@ def run(lab, fail_outgoing=False, crash_after_xbt=False, restart_operators=False
     if btc_deadline:
         from btc_deadline import run_deadline
         run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
-                     btc_invoice, stored['binding'], plugin, initial, pay_process, pay_log)
+                     btc_invoice, stored['binding'], plugin, initial, pay_process, pay_log,
+                     watch=watch_deadline)
         return
     if onchain_preimage or onchain_timeout:
         from onchain_swap import run_onchain
@@ -459,6 +470,10 @@ def main():
                       help='Recover XBT via on-chain timeout, then fail BTC after definitive outgoing failure.')
     mode.add_argument('--btc-deadline', action='store_true',
                       help='Advance BTC with XBT pending, force-close BTC, then claim with the XBT preimage.')
+    mode.add_argument('--watch-deadline', action='store_true',
+                      help='Restart a pending swap watcher, then let it close BTC and recover settlement.')
+    mode.add_argument('--service-demo', action='store_true', help='Exercise quote/run/status service commands.')
+    mode.add_argument('--service-lab', action='store_true', help='Keep funded regtest nodes running for interactive service use.')
     parser.add_argument('--work-dir', type=Path, help='New short directory to retain data/logs.')
     args = parser.parse_args()
     temporary = None
@@ -478,7 +493,8 @@ def main():
             args.pending_failure or args.pending_restart_failure or args.pending_kill_failure,
             args.pending_restart or args.pending_restart_failure,
             args.pending_kill or args.pending_kill_failure, args.stale_timelock, args.concurrent,
-            args.outgoing_binding, args.onchain_preimage, args.onchain_timeout, args.btc_deadline)
+            args.outgoing_binding, args.onchain_preimage, args.onchain_timeout, args.btc_deadline, args.watch_deadline,
+            args.service_demo, args.service_lab)
     except Exception as exc:
         if isinstance(exc, subprocess.CalledProcessError):
             print(f'RPC stdout: {exc.stdout}\nRPC stderr: {exc.stderr}', flush=True)

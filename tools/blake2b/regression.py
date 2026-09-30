@@ -31,7 +31,7 @@ class Case:
 
 def cases():
     result = [Case('headers', (sys.executable, str(HERE / 'check_headers.py')))]
-    for name in ('quote_plugin', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard'):
+    for name in ('quote_plugin', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
         result.append(Case('unit-' + name.replace('_', '-'),
                            (sys.executable, str(HERE / ('test_' + name + '.py')), '-v')))
     for name in ('run-block_blake2b', 'run-bitcoin_block_from_hex'):
@@ -46,7 +46,7 @@ def cases():
                  'crash-while-pending', 'pending-failure', 'pending-restart',
                  'pending-restart-failure', 'pending-kill', 'pending-kill-failure',
                  'stale-timelock', 'concurrent', 'outgoing-binding', 'onchain-preimage', 'onchain-timeout',
-                 'btc-deadline'):
+                 'btc-deadline', 'watch-deadline', 'service-demo'):
         result.append(Case('swap-' + (mode or 'direct'),
                            (sys.executable, str(HERE / 'swap_regtest.py')) +
                            (('--' + mode,) if mode else ()), True))

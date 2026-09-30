@@ -1,8 +1,9 @@
 """BTC deadline/claim fixture with an unresolved outgoing XBT payment.
 
 Pending controller reconciliation closes BTC with 30 blocks remaining.
-The harness invokes the controller; there is no background polling service. XBT height stays fixed and the receiver cooperates
-after the BTC commitment confirms. No cross-chain stall guarantee is implied.
+Optionally use a restarted foreground watcher for automatic reconciliation.
+XBT height stays fixed and the receiver cooperates after the BTC commitment
+confirms. No cross-chain stall guarantee is implied.
 """
 import json
 from pathlib import Path
@@ -15,7 +16,7 @@ from swap_controller import save
 
 
 def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
-                 btc_invoice, binding, plugin, initial, pay_process, pay_log):
+                 btc_invoice, binding, plugin, initial, pay_process, pay_log, watch=False):
     payment_hash = invoice['payment_hash']
 
     def rpc(node, *args):
@@ -67,10 +68,27 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
         wait_until(lambda: any(h['payment_hash'] == payment_hash and h['state'] == state
                               for h in channel(node).get('htlcs', [])), node['proc'])
 
+    watcher = None
+    watch_log = lab.root / 'watcher.log'
+    watch_command = [sys.executable, str(Path(__file__).with_name('swap_watch.py')),
+                     '--state', str(path), '--interval', '0.2']
+
+    def watch_events():
+        return [json.loads(line) for line in watch_log.read_text().split('\n')[:-1] if line.strip()]
+
+    def await_polls():
+        count = len(watch_events())
+        wait_until(lambda: len(watch_events()) >= count + 2, watcher, timeout=40)
+        if any(e['event'] != 'reconciled' or e.get('outcome') != 'pending' for e in watch_events()):
+            raise AssertionError('watcher did not reconcile pending swap: ' + watch_log.read_text())
+
     def assert_pending():
-        result = subprocess.run(command, text=True, capture_output=True, timeout=60)
-        if result.returncode or json.loads(result.stdout) != {'phase': 'outgoing_started', 'outcome': 'pending'}:
-            raise AssertionError('controller did not preserve unresolved swap')
+        if watch:
+            await_polls()
+        else:
+            result = subprocess.run(command, text=True, capture_output=True, timeout=60)
+            if result.returncode or json.loads(result.stdout) != {'phase': 'outgoing_started', 'outcome': 'pending'}:
+                raise AssertionError('controller did not preserve unresolved swap')
         for node in (payer, swap_xbt):
             payments = rpc(node, 'listsendpays')['payments']
             if len(payments) != 1 or payments[0]['status'] != 'pending' or payments[0].get('payment_preimage'):
@@ -82,16 +100,31 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     if remaining <= 30:
         raise AssertionError('insufficient initial BTC margin for deadline fixture')
     mine(remaining - 31)
+    if watch:
+        watcher = lab.start(watch_command, watch_log)
     assert_pending()
+    if watch:
+        watcher.kill()
+        watcher.wait(timeout=10)
+        if watcher.returncode != -9:
+            raise AssertionError('watcher was not killed')
+        if path.read_bytes() != before:
+            raise AssertionError('watcher changed pending checkpoint')
+        watcher = lab.start(watch_command, watch_log)
+        assert_pending()
+        print('PASS: watcher SIGKILL/restart preserved pending swap and original XBT attempt', flush=True)
     if channel(swap_btc)['state'] != 'CHANNELD_NORMAL':
         raise AssertionError('controller closed before threshold')
     print('PASS: controller leaves BTC channel open at 31 blocks remaining', flush=True)
     mine(1)
     if incoming['expiry'] - rpc(btc, 'getblockcount') != 30 or rpc(xbt, 'getblockcount') != xbt_height:
         raise AssertionError('unexpected chain heights after BTC deadline advancement')
-    triggered = subprocess.run(command, text=True, capture_output=True, timeout=60)
-    if triggered.returncode or json.loads(triggered.stdout) != {'phase': 'outgoing_started', 'outcome': 'pending'}:
-        raise AssertionError(f'deadline controller failed: {triggered.stdout}\n{triggered.stderr}')
+    if watch:
+        wait_until(lambda: 'btc_close_result' in json.loads(path.read_text()), watcher, timeout=60)
+    else:
+        triggered = subprocess.run(command, text=True, capture_output=True, timeout=60)
+        if triggered.returncode or json.loads(triggered.stdout) != {'phase': 'outgoing_started', 'outcome': 'pending'}:
+            raise AssertionError(f'deadline controller failed: {triggered.stdout}\n{triggered.stderr}')
     protected = json.loads(path.read_text())
     if protected['btc_close_intent']['channel_id'] != incoming_channel['channel_id']:
         raise AssertionError('controller closed the wrong BTC channel')
@@ -113,12 +146,22 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
         completed = rpc(swap_xbt, 'waitsendpay', payment_hash, 10)
         if completed['status'] != 'complete':
             raise AssertionError('XBT did not settle after BTC went on-chain')
-        result = subprocess.run(command, text=True, capture_output=True, timeout=60)
-        if result.returncode:
-            raise AssertionError(f'controller recovery failed: {result.stdout}\n{result.stderr}')
-        expected = {'phase': 'btc_released', 'payment_preimage': completed['payment_preimage']}
-        if json.loads(result.stdout) != expected:
-            raise AssertionError('controller failed to recover XBT preimage and release BTC hook')
+        if watch:
+            watcher.wait(timeout=60)
+            checkpoint = json.loads(path.read_text())
+            if (watcher.returncode or checkpoint['phase'] != 'btc_released'
+                    or checkpoint['preimage'] != completed['payment_preimage']):
+                raise AssertionError('watcher failed to recover BTC release: ' + watch_log.read_text())
+            if completed['payment_preimage'] in watch_log.read_text():
+                raise AssertionError('watcher leaked preimage to log')
+            print('PASS: watcher recovered XBT completion and released BTC without manual reconciliation', flush=True)
+        else:
+            result = subprocess.run(command, text=True, capture_output=True, timeout=60)
+            if result.returncode:
+                raise AssertionError(f'controller recovery failed: {result.stdout}\n{result.stderr}')
+            expected = {'phase': 'btc_released', 'payment_preimage': completed['payment_preimage']}
+            if json.loads(result.stdout) != expected:
+                raise AssertionError('controller failed to recover XBT preimage and release BTC hook')
         return completed['payment_preimage']
 
     print('On-chain checks: Alice = BTC payer; Bob = BTC operator', flush=True)
@@ -157,4 +200,6 @@ def run_deadline(lab, payer, swap_btc, swap_xbt, receiver, btc, xbt, invoice,
     if rpc(swap_xbt, 'listsendpays')['payments'] != outgoing:
         raise AssertionError('repeat recovery changed XBT payment history')
     print('PASS: XBT settled off-chain; BTC operator claim and CSV sweep confirmed; no additional XBT attempt', flush=True)
+    if watch:
+        print('PASS: restarted watcher handled BTC deadline and settlement automatically', flush=True)
     print('BTC deadline swap test OK (controller-triggered BTC close; BTC fees apply; regtest only)', flush=True)

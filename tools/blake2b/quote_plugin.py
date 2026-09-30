@@ -122,7 +122,10 @@ def main():
                         or not quote['xbt_invoice'].startswith('lnxbtrt')):
                     raise ValueError('invalid expiry or XBT test invoice')
                 if quote['payment_hash'] in quotes:
-                    raise ValueError('quote already registered')
+                    if quotes[quote['payment_hash']]['terms'] != quote:
+                        raise ValueError('quote already registered with different terms')
+                    reply(request, {'registered': True})
+                    continue  # Idempotent setup retry: never reset phase or binding.
                 quotes[quote['payment_hash']] = {'terms': quote, 'phase': 'quoted'}
                 save(path, quotes)
                 reply(request, {'registered': True})
