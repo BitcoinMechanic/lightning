@@ -24,14 +24,14 @@ class RecoveryTests(unittest.TestCase):
                        'binding': ['104x1x0', 0]}
 
     def test_resolved_skips_release_and_outgoing_rpcs(self):
-        with patch('swap_controller.Lab.rpc', return_value=self.status) as rpc:
+        with patch('swap_controller.RPC.call', return_value=self.status) as rpc:
             self.assertEqual(run(self.path)['phase'], 'btc_released')
             rpc.assert_called_once_with(['btc'], 'xbt-quote-status', self.payment_hash)
-        with patch('swap_controller.Lab.rpc', side_effect=AssertionError('unexpected RPC')):
+        with patch('swap_controller.RPC.call', side_effect=AssertionError('unexpected RPC')):
             self.assertEqual(run(self.path)['phase'], 'btc_released')
 
     def test_held_releases_once(self):
-        with patch('swap_controller.Lab.rpc', side_effect=[dict(self.status, phase='held'),
+        with patch('swap_controller.RPC.call', side_effect=[dict(self.status, phase='held'),
                                                          {'released': 1}]) as rpc:
             run(self.path)
             self.assertEqual(rpc.call_count, 2)
@@ -41,20 +41,20 @@ class RecoveryTests(unittest.TestCase):
         for override in ({'binding': ['104x1x0', 1]}, {'payment_hash': '00' * 32},
                          {'phase': 'quoted'}):
             with self.subTest(override=override):
-                with patch('swap_controller.Lab.rpc', return_value=dict(self.status, **override)) as rpc:
+                with patch('swap_controller.RPC.call', return_value=dict(self.status, **override)) as rpc:
                     with self.assertRaises(RuntimeError):
                         run(self.path)
                     self.assertEqual(rpc.call_count, 1)
                 self.assertEqual(json.loads(self.path.read_text()), self.state)
 
     def test_unknown_status_does_not_checkpoint(self):
-        with patch('swap_controller.Lab.rpc', side_effect=RuntimeError('transport failure')):
+        with patch('swap_controller.RPC.call', side_effect=RuntimeError('transport failure')):
             with self.assertRaises(RuntimeError):
                 run(self.path)
         self.assertEqual(json.loads(self.path.read_text()), self.state)
 
     def test_crash_keeps_xbt_paid_checkpoint(self):
-        with patch('swap_controller.Lab.rpc', side_effect=[dict(self.status, phase='held'),
+        with patch('swap_controller.RPC.call', side_effect=[dict(self.status, phase='held'),
                                                          {'released': 1}]), \
                 patch('swap_controller.os._exit', side_effect=SystemExit) as crash:
             with self.assertRaises(SystemExit):
@@ -70,7 +70,7 @@ class RecoveryTests(unittest.TestCase):
         payment = {'payment_hash': self.payment_hash, 'status': 'pending',
                    'amount_msat': 200000000}
         for attempt in range(2):
-            with patch('swap_controller.Lab.rpc', return_value={'payments': [payment]}) as rpc:
+            with patch('swap_controller.RPC.call', return_value={'payments': [payment]}) as rpc:
                 self.assertEqual(run(self.path), {'phase': 'outgoing_started', 'outcome': 'pending'})
                 rpc.assert_called_once_with(['xbt'], 'listsendpays')
             self.assertEqual(self.path.read_bytes(), before)
@@ -87,7 +87,7 @@ class RecoveryTests(unittest.TestCase):
                          [dict(payment, amount_msat=1)],
                          [dict(payment, payment_preimage=self.preimage)]):
             with self.subTest(payments=payments):
-                with patch('swap_controller.Lab.rpc', return_value={'payments': payments}) as rpc:
+                with patch('swap_controller.RPC.call', return_value={'payments': payments}) as rpc:
                     with self.assertRaises(RuntimeError):
                         run(self.path)
                     rpc.assert_called_once_with(['xbt'], 'listsendpays')
@@ -99,21 +99,21 @@ class RecoveryTests(unittest.TestCase):
         save(self.path, state)
         payment = {'payment_hash': self.payment_hash, 'status': 'failed',
                    'amount_msat': 200000000}
-        with patch('swap_controller.Lab.rpc', side_effect=[{'payments': [payment]},
+        with patch('swap_controller.RPC.call', side_effect=[{'payments': [payment]},
                    dict(self.status, phase='held'), {'failed': 1}]) as rpc:
             self.assertEqual(run(self.path), {'phase': 'btc_failed', 'outcome': 'failed'})
             self.assertEqual([call.args[1] for call in rpc.call_args_list],
                              ['listsendpays', 'xbt-quote-status', 'xbt-fail'])
             self.assertEqual(rpc.call_args.args,
                              (['btc'], 'xbt-fail', self.payment_hash, json.dumps(state['btc_binding'])))
-        with patch('swap_controller.Lab.rpc', side_effect=AssertionError('unexpected RPC')):
+        with patch('swap_controller.RPC.call', side_effect=AssertionError('unexpected RPC')):
             self.assertEqual(run(self.path), {'phase': 'btc_failed', 'outcome': 'failed'})
 
     def test_failure_checkpoint_reconciles_already_failed_hook(self):
         state = dict(self.state, phase='xbt_failed')
         del state['preimage']
         save(self.path, state)
-        with patch('swap_controller.Lab.rpc', return_value=dict(self.status, phase='failed')) as rpc:
+        with patch('swap_controller.RPC.call', return_value=dict(self.status, phase='failed')) as rpc:
             self.assertEqual(run(self.path)['phase'], 'btc_failed')
             rpc.assert_called_once_with(['btc'], 'xbt-quote-status', self.payment_hash)
 
@@ -122,7 +122,7 @@ class RecoveryTests(unittest.TestCase):
         del state['preimage']
         save(self.path, state)
         for status in (self.status, dict(self.status, phase='held', binding=['104x1x0', 1])):
-            with patch('swap_controller.Lab.rpc', return_value=status) as rpc:
+            with patch('swap_controller.RPC.call', return_value=status) as rpc:
                 with self.assertRaises(RuntimeError):
                     run(self.path)
                 rpc.assert_called_once_with(['btc'], 'xbt-quote-status', self.payment_hash)

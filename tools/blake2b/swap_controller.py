@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 import time
 
-from smoke_regtest import Lab, wait_until
+from swap_rpc import RPC, wait_until
 from deadline_guard import protect
 import live_pilot as pilot
 
@@ -36,7 +36,7 @@ def save(path, state):
 
 
 def check_spend(state):
-    info = Lab.rpc(state['btc_cli'], 'xbt-spend-info', state['payment_hash'])
+    info = RPC.call(state['btc_cli'], 'xbt-spend-info', state['payment_hash'])
     if (info['payment_hash'] != state['payment_hash']
             or info['binding'] != state['btc_binding']
             or info['xbt_amount_msat'] != state['xbt_amount_msat']):
@@ -53,9 +53,9 @@ def check_spend(state):
             if (info.get('oracle_digest') != state['oracle_digest']
                     or info.get('controller_id') != state['controller_id']):
                 raise RuntimeError('market quote audit or controller mismatch')
-        pilot.require_reserves(state, Lab.rpc)
-        pilot.check_channels(state, Lab.rpc)
-    height = Lab.rpc(state['btc_cli'], 'getinfo')['blockheight']
+        pilot.require_reserves(state, RPC.call)
+        pilot.check_channels(state, RPC.call)
+    height = RPC.call(state['btc_cli'], 'getinfo')['blockheight']
     if info['expires_at'] <= int(time.time()):
         return 'quote_expired'
     remaining = info['cltv_expiry'] - height
@@ -65,7 +65,7 @@ def check_spend(state):
         return 'insufficient_btc_cltv' if remaining < info['min_cltv_delta'] else 'excessive_btc_cltv'
     if state.get('xbt_invoice') != info['xbt_invoice']:
         return 'quoted_invoice_mismatch'
-    decoded = Lab.rpc(state['xbt_cli'], 'decode', info['xbt_invoice'])
+    decoded = RPC.call(state['xbt_cli'], 'decode', info['xbt_invoice'])
     if (decoded.get('valid') is not True or decoded.get('type') != 'bolt11 invoice'
             or decoded.get('currency') != ('xbt' if pilot.is_live(state) else 'xbtrt')
             or decoded.get('payment_hash') != state['payment_hash']
@@ -109,7 +109,7 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
     state = json.loads(path.read_text())
     if recover_only and state['phase'] == 'prepared':
         return {'phase': 'prepared', 'outcome': 'needs_manual_start'}
-    pilot.verify_state(state, Lab.rpc)
+    pilot.verify_state(state, RPC.call)
     payment_hash = state['payment_hash']
     if state['phase'] == 'prepared':
         if state.get('quote_gate'):
@@ -120,7 +120,7 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
         # repeat sendpay: an interrupted RPC does not tell us whether it sent.
         state['phase'] = 'outgoing_started'
         save(path, state)
-        Lab.rpc([*state['xbt_cli'], '-k'], 'sendpay',
+        RPC.call([*state['xbt_cli'], '-k'], 'sendpay',
                 'route=' + json.dumps(state['route']),
                 'payment_hash=' + payment_hash,
                 'payment_secret=' + state['payment_secret'])
@@ -130,20 +130,20 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
             # Bounded fixture wait used to exercise an overlapping controller.
             # Keep individual RPC calls short; a timeout never authorizes refund.
             def terminal():
-                payments = [p for p in Lab.rpc(state['xbt_cli'], 'listsendpays')['payments']
+                payments = [p for p in RPC.call(state['xbt_cli'], 'listsendpays')['payments']
                             if p['payment_hash'] == payment_hash]
                 if len(payments) != 1:
                     raise RuntimeError('unexpected outgoing attempt count while waiting')
                 return payments[0]['status'] != 'pending'
             wait_until(terminal, timeout=60)
-        payment = Lab.rpc(state['xbt_cli'], 'waitsendpay', payment_hash, 10)
+        payment = RPC.call(state['xbt_cli'], 'waitsendpay', payment_hash, 10)
         if payment['status'] != 'complete':
             raise RuntimeError('outgoing payment did not complete')
         if crash_after_xbt:
             os._exit(86)  # No cleanup or completion checkpoint: simulated crash.
 
     if state['phase'] == 'outgoing_started':
-        payments = [p for p in Lab.rpc(state['xbt_cli'], 'listsendpays')['payments']
+        payments = [p for p in RPC.call(state['xbt_cli'], 'listsendpays')['payments']
                     if p['payment_hash'] == payment_hash]
         if len(payments) != 1:
             raise RuntimeError('outgoing outcome unresolved; refusing resend or BTC release')
@@ -153,7 +153,7 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
         if payment['status'] == 'pending' and not payment.get('payment_preimage'):
             # A later invocation reconciles again. Neither resend nor release
             # (nor fail) BTC on a timeout or a still-pending outgoing payment.
-            protect(path, state, Lab.rpc, save)
+            protect(path, state, RPC.call, save)
             return {'phase': 'outgoing_started', 'outcome': 'pending'}
         if (payment['status'] == 'failed' and not payment.get('payment_preimage')
                 and state.get('quote_gate')):
@@ -172,13 +172,13 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
     if state['phase'] == 'xbt_failed':
         if not state.get('quote_gate') or 'preimage' in state:
             raise RuntimeError('invalid failure checkpoint')
-        status = Lab.rpc(state['btc_cli'], 'xbt-quote-status', payment_hash)
+        status = RPC.call(state['btc_cli'], 'xbt-quote-status', payment_hash)
         if (status['payment_hash'] != payment_hash
                 or status['binding'] != state['btc_binding']
                 or status['phase'] not in ('held', 'failed')):
             raise RuntimeError('BTC quote not eligible for failure; inspect node state')
         if status['phase'] == 'held':
-            result = Lab.rpc(state['btc_cli'], 'xbt-fail', payment_hash,
+            result = RPC.call(state['btc_cli'], 'xbt-fail', payment_hash,
                              json.dumps(state['btc_binding']))
             if result['failed'] != 1:
                 raise RuntimeError('bound BTC HTLC not failed')
@@ -190,13 +190,13 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
     if state['phase'] == 'xbt_paid':
         released = False
         if state.get('quote_gate'):
-            status = Lab.rpc(state['btc_cli'], 'xbt-quote-status', payment_hash)
+            status = RPC.call(state['btc_cli'], 'xbt-quote-status', payment_hash)
             if (status['payment_hash'] != payment_hash
                     or status['binding'] != state['btc_binding']
                     or status['phase'] not in ('held', 'resolved')):
                 raise RuntimeError('BTC quote phase or binding mismatch; inspect node state')
             released = status['phase'] == 'resolved'
-        if not released and Lab.rpc(state['btc_cli'], 'xbt-release', state['preimage'])['released'] != 1:
+        if not released and RPC.call(state['btc_cli'], 'xbt-release', state['preimage'])['released'] != 1:
             raise RuntimeError('held BTC HTLC not released; inspect node state')
         if crash_after_btc:
             os._exit(87)  # Release acknowledged, controller checkpoint absent.

@@ -4,7 +4,7 @@ import time
 
 import live_pilot as pilot
 from neoxa_oracle import estimate, fetch
-from smoke_regtest import Lab
+from swap_rpc import RPC
 
 
 def minimum_sats(channel):
@@ -71,15 +71,15 @@ def check(directory, margin_bps):
     config = data['config']
     if not pilot.is_live(config):
         raise ValueError('market check requires established live operator configuration')
-    pilot.verify_nodes(dict(config, node_ids=data['node_ids']), Lab.rpc)
-    pilot.require_reserves(config, Lab.rpc)
+    pilot.verify_nodes(dict(config, node_ids=data['node_ids']), RPC.call)
+    pilot.require_reserves(config, RPC.call)
     btc_id = data['terms'].get('btc_channel')
     route = data['controller']['route']
     if not btc_id or len(route) != 1:
         raise ValueError('quote must identify both original direct channels')
-    btc = [c for c in Lab.rpc(config['btc_cli'], 'listpeerchannels')['channels']
+    btc = [c for c in RPC.call(config['btc_cli'], 'listpeerchannels')['channels']
            if c.get('short_channel_id') == btc_id]
-    xbt = [c for c in Lab.rpc(config['xbt_cli'], 'listpeerchannels')['channels']
+    xbt = [c for c in RPC.call(config['xbt_cli'], 'listpeerchannels')['channels']
            if c.get('short_channel_id') == route[0]['channel'] and c['peer_id'] == route[0]['id']]
     if len(btc) != 1 or len(xbt) != 1:
         raise ValueError('original direct channels not found')

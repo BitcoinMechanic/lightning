@@ -1,9 +1,18 @@
-# BLAKE2b port: header hashing and parsing
+# XBT Core Lightning and optional BTC-to-XBT swaps
+
+This fork includes XBT chain support and optional swap-operator tools.
+An ordinary XBT receiver does not need to enable the operator software or
+run a BTC node. See [ROLES.md](ROLES.md) for deployment roles and boundaries,
+[MARKET-SWAPS.md](MARKET-SWAPS.md) for the experimental live swap workflow,
+and [SERVICES.md](SERVICES.md) for background services.
+
+## Initial header-port history
 
 Patch 1 supplies a standard-library-only Python hash oracle and upstream
 vectors. Patch 2 adds the native C hash implementation and an opt-in block
 parser path. Patch 3 enables it for an experimental private `xbt-regtest`
-network with separate Lightning identity. There is no XBT mainnet entry.
+network with separate Lightning identity. Those initial patches had no XBT
+mainnet entry; later patches added the live XBT profile described below.
 These patches do not establish that funded channels are safe.
 
 Run from the checkout root:

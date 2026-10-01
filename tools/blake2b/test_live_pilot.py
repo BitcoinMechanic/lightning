@@ -60,7 +60,7 @@ class PilotTests(unittest.TestCase):
         raise AssertionError(method)
 
     def test_live_quote_pins_identity_limits_and_invoice_network(self):
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbt-fixture', 1000, self.directory)
             self.assertEqual(publish(self.directory)['btc_sats'], 1000)
         data = json.loads((self.directory / 'quote.json').read_text())
@@ -70,7 +70,7 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(data['controller']['btc_amount_msat'], pilot.BTC_MSAT)
 
     def test_oversize_btc_refused_before_rpc(self):
-        with patch('swap_service.Lab.rpc') as rpc, self.assertRaises(ValueError):
+        with patch('swap_service.RPC.call') as rpc, self.assertRaises(ValueError):
             create(self.config, 'lnxbt-fixture', 1001, self.directory)
         rpc.assert_not_called()
 
@@ -78,7 +78,7 @@ class PilotTests(unittest.TestCase):
         for key, value in [('amount_msat', 2000001), ('currency', 'xbtrt'), ('currency', 'bc')]:
             original = self.decoded[key]
             self.decoded[key] = value
-            with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+            with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
                 create(self.config, 'lnxbt-fixture', 1000, self.directory)
             self.assertFalse(self.directory.exists())
             self.decoded[key] = original
@@ -86,7 +86,7 @@ class PilotTests(unittest.TestCase):
     def test_live_nodes_require_opt_in(self):
         config = dict(self.config)
         del config['profile']
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
             create(config, 'lnxbt-fixture', 1000, self.directory)
         with self.assertRaises(ValueError):
             pilot.is_live({'profile': 'typo'})
@@ -110,7 +110,7 @@ class PilotTests(unittest.TestCase):
         path = self.root / 'state.json'
         save(path, state)
         before = path.read_bytes()
-        with patch('swap_controller.Lab.rpc', side_effect=self.rpc), self.assertRaises(RuntimeError):
+        with patch('swap_controller.RPC.call', side_effect=self.rpc), self.assertRaises(RuntimeError):
             run(path)
         self.assertEqual(self.calls, ['getinfo', 'getinfo'])
         self.assertEqual(path.read_bytes(), before)
@@ -194,7 +194,7 @@ class PilotTests(unittest.TestCase):
             return self.rpc(cli, method, *args)
         path = self.root / 'controller.json'
         save(path, state)
-        with patch('swap_controller.Lab.rpc', side_effect=rpc):
+        with patch('swap_controller.RPC.call', side_effect=rpc):
             self.assertEqual(run(path)['phase'], 'btc_released')
             self.assertEqual(run(path)['phase'], 'btc_released')
         self.assertEqual(len(sent), 1)
@@ -278,7 +278,7 @@ class ReplacementTests(unittest.TestCase):
 
     def test_replacement_preserves_old_state_and_binds_channel(self):
         before = self.oldpath.read_bytes()
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbt-v2', 2000, self.base.directory)
             result = publish(self.base.directory)
         self.assertEqual(result['btc_sats'], 2000)
@@ -291,13 +291,13 @@ class ReplacementTests(unittest.TestCase):
 
     def test_btc_fee_preflight_before_quote_creation(self):
         self.incoming['feerate']['perkw'] = 3000
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(RuntimeError):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(RuntimeError):
             create(self.config, 'lnxbt-v2', 2000, self.base.directory)
         self.assertFalse(self.base.directory.exists())
         self.assertEqual(self.registered, [])
 
     def test_fee_change_before_publication_refused(self):
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbt-v2', 2000, self.base.directory)
             self.incoming['feerate']['perkw'] = 3000
             with self.assertRaises(RuntimeError):
@@ -363,7 +363,7 @@ class RenewalTests(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.directory = self.f.base.directory
-        with patch('swap_service.Lab.rpc', side_effect=self.f.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.f.rpc):
             create(self.f.config, 'lnxbt-v2', 2000, self.directory)
             publish(self.directory)
         self.path = self.directory / 'quote.json'
@@ -388,7 +388,7 @@ class RenewalTests(unittest.TestCase):
         return self.f.rpc(cli, method, *args)
 
     def attempt(self):
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), patch('swap_service.time.time', return_value=self.now):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), patch('swap_service.time.time', return_value=self.now):
             return renew(self.directory)
 
     def test_preserves_terms_and_reprints_without_second_extension(self):
@@ -406,7 +406,7 @@ class RenewalTests(unittest.TestCase):
         self.lose_reply = True
         with self.assertRaises(TimeoutError):
             self.attempt()
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(RuntimeError):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(RuntimeError):
             publish(self.directory)
         self.now += 10
         self.attempt()

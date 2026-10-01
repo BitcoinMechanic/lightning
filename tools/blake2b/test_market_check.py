@@ -82,7 +82,7 @@ class CapacityTests(unittest.TestCase):
                 if method == 'listpeerchannels':
                     return {'channels': [self.btc if cli == ['btc'] else self.xbt]}
                 self.fail('unexpected RPC: '+method)
-            with patch('market_check.Lab.rpc', side_effect=rpc), \
+            with patch('market_check.RPC.call', side_effect=rpc), \
                     patch('market_check.fetch', side_effect=[self.ticker, self.book]), \
                     patch('market_check.time.time_ns', return_value=1000001000000):
                 self.assertFalse(check(directory, 100)['feasible'])

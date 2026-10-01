@@ -6,7 +6,7 @@ from pathlib import Path
 import stat
 import sys
 
-from smoke_regtest import Lab
+from swap_rpc import RPC
 from swap_controller import save
 from swap_service import config_from, identities
 import live_pilot as pilot
@@ -110,7 +110,7 @@ def prepare(directory, config_path, bitcoin_cli, swap_root):
     if config['btc_cli'] != expected['btc'] or config['xbt_cli'] != expected['xbt']:
         raise ValueError('operator CLI paths differ from expected local deployment')
     receiver_cli = [cli, '--lightning-dir='+roots['receiver'], '--network=xbt', '--json', '--notifications=none']
-    receiver = Lab.rpc(receiver_cli, 'getinfo')
+    receiver = RPC.call(receiver_cli, 'getinfo')
     if receiver['network'] != 'xbt' or receiver['id'] != config['market']['xbt_peer']:
         raise ValueError('receiver identity mismatch')
     for role, marker in (('btc', 'btc-https-observer-v1'), ('xbt', 'xbt-observer-v1'), ('receiver', 'xbt-observer-v1')):

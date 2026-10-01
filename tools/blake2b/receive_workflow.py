@@ -13,7 +13,7 @@ import time
 
 import live_pilot as pilot
 from market_policy import policy
-from smoke_regtest import Lab
+from swap_rpc import RPC
 from swap_controller import save
 import swap_service as service
 
@@ -42,7 +42,7 @@ def receiver_cli(config, directory):
 
 
 def verify_receiver(config, cli):
-    info = Lab.rpc(cli, 'getinfo')
+    info = RPC.call(cli, 'getinfo')
     if info['network'] != 'xbt' or info['id'] != policy(config)['xbt_peer']:
         raise ValueError('receiver node differs from configured peer')
     if any(k.startswith('warning_') for k in info):
@@ -50,10 +50,10 @@ def verify_receiver(config, cli):
 
 
 def get_invoice(cli, label, amount):
-    rows = Lab.rpc(cli, 'listinvoices', label)['invoices']
+    rows = RPC.call(cli, 'listinvoices', label)['invoices']
     if not rows:
-        Lab.rpc(cli, 'invoice', str(amount)+'msat', label, 'XBT channel workflow', 1200)
-        rows = Lab.rpc(cli, 'listinvoices', label)['invoices']
+        RPC.call(cli, 'invoice', str(amount)+'msat', label, 'XBT channel workflow', 1200)
+        rows = RPC.call(cli, 'listinvoices', label)['invoices']
     if len(rows) != 1 or rows[0]['amount_msat'] != amount:
         raise ValueError('saved invoice label or amount mismatch')
     return rows[0]
@@ -102,7 +102,7 @@ def receive(config, receiver, directory, sats, stop):
             data = json.loads(quote_path.read_text())
             if (data['config'] != config or data['terms']['xbt_amount_msat'] != sats*1000):
                 raise ValueError('saved quote differs from receiving request')
-            rows = Lab.rpc(receiver, 'listinvoices', request['label'])['invoices']
+            rows = RPC.call(receiver, 'listinvoices', request['label'])['invoices']
             if (len(rows) != 1 or rows[0]['payment_hash'] != data['terms']['payment_hash']
                     or rows[0]['bolt11'] != data['terms']['xbt_invoice']):
                 raise ValueError('receiver invoice differs from saved quote')
@@ -126,7 +126,7 @@ def receive(config, receiver, directory, sats, stop):
             code = service.serve(swap, stop, report=report)
             state_path = swap/'state.json'
             if state_path.exists() and json.loads(state_path.read_text())['phase'] == 'btc_released':
-                rows = Lab.rpc(receiver, 'listinvoices', request['label'])['invoices']
+                rows = RPC.call(receiver, 'listinvoices', request['label'])['invoices']
                 paid = (len(rows) == 1 and rows[0]['status'] == 'paid'
                         and rows[0]['payment_hash'] == data['terms']['payment_hash']
                         and rows[0]['amount_received_msat'] == sats*1000)
@@ -146,8 +146,8 @@ def repay(directory, receiver):
     if original['payment_hash'] != data['terms']['payment_hash']:
         raise ValueError('original swap identity mismatch')
     verify_receiver(config, receiver)
-    pilot.verify_nodes(dict(config, node_ids=data['node_ids']), Lab.rpc)
-    pilot.verify_state(original, Lab.rpc)
+    pilot.verify_nodes(dict(config, node_ids=data['node_ids']), RPC.call)
+    pilot.verify_state(original, RPC.call)
     original_amount = data['terms']['xbt_amount_msat']
     if (type(original_amount) is not int or not 0 < original_amount <= 500000000
             or original_amount != original['xbt_amount_msat']):
@@ -162,7 +162,7 @@ def repay(directory, receiver):
             if any(state.get(k) != v for k,v in expected.items()):
                 raise ValueError('repayment record differs; do not reset it')
         else:
-            candidates = [c for c in Lab.rpc(receiver, 'listpeerchannels')['channels']
+            candidates = [c for c in RPC.call(receiver, 'listpeerchannels')['channels']
                           if c.get('short_channel_id') == config['market']['xbt_channel']
                           and c['peer_id'] == data['node_ids'][1]]
             if len(candidates) != 1:
@@ -178,12 +178,12 @@ def repay(directory, receiver):
             raise ValueError('saved repayment amount outside original receipt')
         if state['phase'] == 'invoice':
             # Original receipt must be present before returning its amount.
-            received = [i for i in Lab.rpc(receiver, 'listinvoices')['invoices']
+            received = [i for i in RPC.call(receiver, 'listinvoices')['invoices']
                         if i['payment_hash'] == original['payment_hash']]
             if (len(received) != 1 or received[0]['status'] != 'paid'
                     or received[0]['amount_received_msat'] < amount):
                 raise ValueError('original receiver payment not confirmed')
-            channel = [c for c in Lab.rpc(receiver, 'listpeerchannels')['channels']
+            channel = [c for c in RPC.call(receiver, 'listpeerchannels')['channels']
                        if c.get('short_channel_id') == config['market']['xbt_channel']
                        and c['peer_id'] == data['node_ids'][1]]
             if (len(channel) != 1 or channel[0]['state'] != 'CHANNELD_NORMAL'
@@ -193,24 +193,24 @@ def repay(directory, receiver):
             invoice = get_invoice(operator, state['label'], amount)
             if invoice['status'] != 'unpaid':
                 raise ValueError('repayment invoice is not unpaid; inspect original record')
-            decoded = Lab.rpc(receiver, 'decode', invoice['bolt11'])
+            decoded = RPC.call(receiver, 'decode', invoice['bolt11'])
             if (decoded.get('valid') is not True or decoded.get('currency') != 'xbt'
                     or decoded['payee'] != data['node_ids'][1] or decoded['amount_msat'] != amount
                     or decoded['payment_hash'] != invoice['payment_hash']
                     or decoded['min_final_cltv_expiry'] > 40
                     or decoded['created_at']+decoded['expiry'] <= int(time.time())+30):
                 raise ValueError('repayment invoice validation failed')
-            attempts = Lab.rpc(receiver, 'listsendpays')['payments']
+            attempts = RPC.call(receiver, 'listsendpays')['payments']
             if any(p['payment_hash'] == invoice['payment_hash'] for p in attempts):
                 raise ValueError('unexpected previous repayment attempt; inspect records')
             route = [dict(id=data['node_ids'][1], channel=channel[0]['short_channel_id'],
                           amount_msat=amount, delay=40)]
             state.update(phase='outgoing_started', payment_hash=invoice['payment_hash'])
             save(path, state)  # A lost reply never permits another sendpay.
-            Lab.rpc([*receiver, '-k'], 'sendpay', 'route='+json.dumps(route),
+            RPC.call([*receiver, '-k'], 'sendpay', 'route='+json.dumps(route),
                     'payment_hash='+invoice['payment_hash'], 'payment_secret='+decoded['payment_secret'])
-            Lab.rpc(receiver, 'waitsendpay', invoice['payment_hash'], 10)
-        attempts = [p for p in Lab.rpc(receiver, 'listsendpays')['payments']
+            RPC.call(receiver, 'waitsendpay', invoice['payment_hash'], 10)
+        attempts = [p for p in RPC.call(receiver, 'listsendpays')['payments']
                     if p['payment_hash'] == state['payment_hash']]
         if len(attempts) != 1:
             raise ValueError('repayment outcome unknown; no automatic resend')
@@ -218,7 +218,7 @@ def repay(directory, receiver):
         if payment['status'] != 'complete':
             emit(dict(event='repayment_status', phase=payment['status']))
             return 0
-        rows = Lab.rpc(operator, 'listinvoices', state['label'])['invoices']
+        rows = RPC.call(operator, 'listinvoices', state['label'])['invoices']
         if (payment['amount_msat'] != amount or len(rows) != 1 or rows[0]['status'] != 'paid'
                 or rows[0]['payment_hash'] != state['payment_hash']
                 or rows[0]['amount_received_msat'] != amount

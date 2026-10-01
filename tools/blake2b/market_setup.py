@@ -6,7 +6,7 @@ from pathlib import Path
 
 import live_pilot as pilot
 from market_policy import policy
-from smoke_regtest import Lab
+from swap_rpc import RPC
 
 
 def setup(previous, destination, max_btc_sats, max_xbt_sats, margin_bps):
@@ -16,16 +16,16 @@ def setup(previous, destination, max_btc_sats, max_xbt_sats, margin_bps):
             or old['config']['profile'] != pilot.PROFILE_V2):
         raise ValueError('setup requires the completed v2 pilot')
     config = {key: old['config'][key] for key in ('btc_cli', 'xbt_cli')}
-    pilot.verify_nodes(dict(config, node_ids=old['node_ids']), Lab.rpc)
-    pilot.require_reserves(config, Lab.rpc)
-    status = Lab.rpc(config['btc_cli'], 'xbt-quote-status', state['payment_hash'])
+    pilot.verify_nodes(dict(config, node_ids=old['node_ids']), RPC.call)
+    pilot.require_reserves(config, RPC.call)
+    status = RPC.call(config['btc_cli'], 'xbt-quote-status', state['payment_hash'])
     if (status['payment_hash'] != state['payment_hash'] or status['phase'] != 'resolved'
             or status['binding'] != state['btc_binding']):
         raise ValueError('original gate binding has not resolved')
-    btc = [c for c in Lab.rpc(config['btc_cli'], 'listpeerchannels')['channels']
+    btc = [c for c in RPC.call(config['btc_cli'], 'listpeerchannels')['channels']
            if c.get('short_channel_id') == old['terms']['btc_channel']]
     receiver = old['controller']['route'][0]['id']
-    xbt = [c for c in Lab.rpc(config['xbt_cli'], 'listpeerchannels')['channels']
+    xbt = [c for c in RPC.call(config['xbt_cli'], 'listpeerchannels')['channels']
            if c['peer_id'] == receiver and c['state'] == 'CHANNELD_NORMAL']
     if len(btc) != 1 or len(xbt) != 1:
         raise ValueError('need exactly one original BTC and one active receiver XBT channel')

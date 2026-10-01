@@ -38,7 +38,7 @@ class WorkflowTests(unittest.TestCase):
         return self.f.rpc(cli, method, *args)
 
     def invoke(self, serve):
-        with patch('receive_workflow.Lab.rpc', side_effect=self.rpc), \
+        with patch('receive_workflow.RPC.call', side_effect=self.rpc), \
                 patch('market_policy.fetch', side_effect=[self.f.ticker, self.f.book]), \
                 patch('swap_service.serve', side_effect=serve), contextlib.redirect_stdout(self.output):
             return receive(self.f.config, self.receiver, self.directory, 350000, threading.Event())
@@ -74,7 +74,7 @@ class WorkflowTests(unittest.TestCase):
             if method == 'invoice':
                 raise TimeoutError()
             return result
-        with patch('receive_workflow.Lab.rpc', side_effect=lost), self.assertRaises(TimeoutError):
+        with patch('receive_workflow.RPC.call', side_effect=lost), self.assertRaises(TimeoutError):
             receive(self.f.config, self.receiver, self.directory, 350000, threading.Event())
         self.invoke(lambda *a, **k: 0)
         self.assertEqual(self.invoice_calls, 1)
@@ -87,7 +87,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_changed_request_refused(self):
         self.invoke(lambda *a, **k: 0)
-        with patch('receive_workflow.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+        with patch('receive_workflow.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
             receive(self.f.config, self.receiver, self.directory, 300000, threading.Event())
 
 
@@ -148,7 +148,7 @@ class RepaymentTests(unittest.TestCase):
             row.update(status='paid', amount_received_msat=345000000)
 
     def test_repay_caps_at_spendable_and_repeat_does_not_send(self):
-        with patch('receive_workflow.Lab.rpc', side_effect=self.rpc), contextlib.redirect_stdout(io.StringIO()) as output:
+        with patch('receive_workflow.RPC.call', side_effect=self.rpc), contextlib.redirect_stdout(io.StringIO()) as output:
             repay(self.directory, self.receiver)
             self.available = 0
             repay(self.directory, self.receiver)
@@ -158,7 +158,7 @@ class RepaymentTests(unittest.TestCase):
 
     def test_lost_send_reply_reconciles_without_resend(self):
         self.lose_reply = True
-        with patch('receive_workflow.Lab.rpc', side_effect=self.rpc), contextlib.redirect_stdout(io.StringIO()):
+        with patch('receive_workflow.RPC.call', side_effect=self.rpc), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(TimeoutError):
                 repay(self.directory, self.receiver)
             repay(self.directory, self.receiver)
@@ -168,7 +168,7 @@ class RepaymentTests(unittest.TestCase):
 
     def test_missing_attempt_never_resends(self):
         self.lose_reply = True
-        with patch('receive_workflow.Lab.rpc', side_effect=self.rpc):
+        with patch('receive_workflow.RPC.call', side_effect=self.rpc):
             with self.assertRaises(TimeoutError):
                 repay(self.directory, self.receiver)
             self.attempts = []

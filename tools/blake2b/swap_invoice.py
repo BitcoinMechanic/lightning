@@ -1,4 +1,4 @@
-"""Minimal unsigned BOLT11 invoice for signinvoice; BTC regtest and live pilot.
+"""Minimal unsigned BOLT11 invoice for signinvoice; BTC and reverse XBT regtest.
 
 Defaults to 100,000 sats; no MPP or routing hints. CLN supplies the signature.
 Used by the experimental regtest service, not a general BOLT11 library.
@@ -54,10 +54,10 @@ def byte_words(raw):
 
 def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry=3600,
                      currency="bcrt", final_cltv=120):
-    if currency not in ('bc', 'bcrt') or type(final_cltv) is not int or not 1 <= final_cltv <= 2016:
+    if currency not in ('bc', 'bcrt', 'xbtrt') or type(final_cltv) is not int or not 1 <= final_cltv <= 2016:
         raise ValueError('unsupported invoice network or CLTV')
     if type(amount_msat) is not int or not 0 < amount_msat <= 2100000000000000000:
-        raise ValueError('invalid BTC amount')
+        raise ValueError('invalid invoice amount')
     if type(expiry) is not int or not 0 < expiry <= 3600:
         raise ValueError('invalid invoice expiry')
     raw_hash, raw_secret = bytes.fromhex(payment_hash), bytes.fromhex(payment_secret)
@@ -74,8 +74,10 @@ def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry
 
     tag('p', byte_words(raw_hash))
     tag('s', byte_words(raw_secret))
-    tag('d', byte_words(b'Regtest swap: pay BTC, receive XBT' if currency == 'bcrt'
-                        else b'Experimental swap: pay BTC, receive XBT'))
+    description = (b'Regtest swap: pay XBT, receive BTC' if currency == 'xbtrt'
+                   else b'Regtest swap: pay BTC, receive XBT' if currency == 'bcrt'
+                   else b'Experimental swap: pay BTC, receive XBT')
+    tag('d', byte_words(description))
     tag('x', uint_words(expiry))
     tag('c', uint_words(final_cltv))
     # Required variable-length onion and payment-secret features; no MPP.

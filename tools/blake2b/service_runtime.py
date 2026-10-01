@@ -8,7 +8,7 @@ import threading
 import time
 
 from service_manager import private_load
-from smoke_regtest import Lab
+from swap_rpc import RPC
 from swap_controller import run, save
 
 
@@ -39,7 +39,7 @@ def tick(settings):
     health = {'checked_at': int(time.time()), 'nodes_ready': False, 'xbt_connected': False,
               'swaps': []}
     try:
-        infos = [Lab.rpc(settings[key], 'getinfo') for key in ('btc_cli', 'xbt_cli')]
+        infos = [RPC.call(settings[key], 'getinfo') for key in ('btc_cli', 'xbt_cli')]
         if ([i['network'] for i in infos] != ['bitcoin', 'xbt']
                 or [i['id'] for i in infos] != settings['node_ids']):
             health['error'] = 'node_identity_mismatch'
@@ -50,13 +50,13 @@ def tick(settings):
         health['error'] = 'operator_rpc_unavailable'
         return health
     try:
-        receiver = Lab.rpc(settings['receiver_cli'], 'getinfo')
+        receiver = RPC.call(settings['receiver_cli'], 'getinfo')
         if receiver['network'] != 'xbt' or receiver['id'] != settings['receiver_id']:
             raise ValueError('receiver identity mismatch')
         health['nodes_ready'] = True
-        peers = Lab.rpc(settings['xbt_cli'], 'listpeers')['peers']
+        peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
         if not any(p['id'] == settings['receiver_id'] and p['connected'] for p in peers):
-            Lab.rpc(settings['xbt_cli'], 'connect', settings['receiver_id'], '127.0.0.1', 19835)
+            RPC.call(settings['xbt_cli'], 'connect', settings['receiver_id'], '127.0.0.1', 19835)
         health['xbt_connected'] = True
     except Exception:
         # A receiver outage must not block reconciliation by the operators.
@@ -78,7 +78,7 @@ def tick(settings):
             if not path.exists():
                 if 'btc_invoice' not in quote:
                     continue  # Never register, sign or publish a draft.
-                status = Lab.rpc(settings['btc_cli'], 'xbt-quote-status', quote['terms']['payment_hash'])
+                status = RPC.call(settings['btc_cli'], 'xbt-quote-status', quote['terms']['payment_hash'])
                 if status['payment_hash'] != quote['terms']['payment_hash']:
                     raise ValueError('gate identity mismatch')
                 if status['phase'] == 'quoted':

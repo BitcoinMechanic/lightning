@@ -80,7 +80,7 @@ class MarketTests(unittest.TestCase):
 
     def quote(self):
         with patch('market_policy.fetch', side_effect=[self.ticker, self.book]), \
-                patch('swap_service.Lab.rpc', side_effect=self.rpc):
+                patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbt-market', None, self.f.directory)
             return publish(self.f.directory)
 
@@ -97,7 +97,7 @@ class MarketTests(unittest.TestCase):
         result = self.quote()
         self.assertEqual(result['btc_sats'], 1591)
         path, state = self.prepared()
-        with patch('swap_controller.Lab.rpc', side_effect=self.rpc), \
+        with patch('swap_controller.RPC.call', side_effect=self.rpc), \
                 patch('market_policy.fetch', side_effect=AssertionError('must not reprice')):
             self.assertEqual(run(path)['phase'], 'btc_released')
             self.assertEqual(run(path)['phase'], 'btc_released')
@@ -108,7 +108,7 @@ class MarketTests(unittest.TestCase):
         self.quote()
         path, state = self.prepared()
         self.pending = True
-        with patch('swap_controller.Lab.rpc', side_effect=self.rpc), \
+        with patch('swap_controller.RPC.call', side_effect=self.rpc), \
                 patch('market_policy.fetch', side_effect=AssertionError('must not reprice')):
             with self.assertRaises(subprocess.TimeoutExpired):
                 run(path)
@@ -125,7 +125,7 @@ class MarketTests(unittest.TestCase):
         for key, value in (('btc_amount_msat', 1), ('oracle_digest', '00'*32),
                            ('btc_channel', 'wrong')):
             save(path, dict(state, **{key: value}))
-            with patch('swap_controller.Lab.rpc', side_effect=self.rpc), self.assertRaises(RuntimeError):
+            with patch('swap_controller.RPC.call', side_effect=self.rpc), self.assertRaises(RuntimeError):
                 run(path)
         self.assertEqual(self.sends, 0)
 
@@ -137,19 +137,19 @@ class MarketTests(unittest.TestCase):
             policy(self.config)
         self.config['market']['max_xbt_sats'] = 400000
         self.config['market']['xbt_peer'] = 'wrong'
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
             create(self.config, 'lnxbt-market', None, self.f.directory)
         self.assertFalse(self.f.directory.exists())
 
     def test_expensive_btc_and_stale_publication_refused(self):
         self.config['market']['max_btc_sats'] = 1000
         with patch('market_policy.fetch', side_effect=[self.ticker, self.book]), \
-                patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+                patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
             create(self.config, 'lnxbt-market', None, self.f.directory)
         self.assertFalse(self.f.directory.exists())
         self.config['market']['max_btc_sats'] = 3000
         with patch('market_policy.fetch', side_effect=[self.ticker, self.book]), \
-                patch('swap_service.Lab.rpc', side_effect=self.rpc):
+                patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbt-market', None, self.f.directory)
             with patch('market_policy.time.time_ns', return_value=(self.ticker['ticker']['computedAt']+30001)*1000000), \
                     self.assertRaises(RuntimeError):
@@ -168,7 +168,7 @@ class MarketTests(unittest.TestCase):
         self.phase = 'resolved'
         self.incoming['htlcs'] = []
         target = self.f.root/'market-config.json'
-        with patch('market_setup.Lab.rpc', side_effect=self.rpc):
+        with patch('market_setup.RPC.call', side_effect=self.rpc):
             self.assertTrue(setup(self.f.directory, target, 3000, 400000, 100)['config_ready'])
             before = target.read_bytes()
             setup(self.f.directory, target, 3000, 400000, 100)

@@ -53,7 +53,7 @@ class ServiceTests(unittest.TestCase):
         raise AssertionError(method)
 
     def setup_quote(self):
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.rpc):
             create(self.config, 'lnxbtrt-fixture', 123000, self.directory)
             return publish(self.directory)
 
@@ -61,7 +61,7 @@ class ServiceTests(unittest.TestCase):
         quote = self.setup_quote()
         self.assertEqual(quote['btc_sats'], 123000)
         before = (self.directory / 'quote.json').read_bytes()
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_service.RPC.call', side_effect=self.rpc):
             self.assertEqual(publish(self.directory), quote)
         self.assertEqual((self.directory / 'quote.json').read_bytes(), before)
         self.assertEqual(self.calls.count('signinvoice'), 1)
@@ -73,12 +73,12 @@ class ServiceTests(unittest.TestCase):
             with self.subTest(field=field):
                 old = self.decoded[field]
                 self.decoded[field] = bad
-                with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+                with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
                     create(self.config, 'lnxbtrt-fixture', 123000, self.directory)
                 self.decoded[field] = old
                 self.assertFalse(self.directory.exists())
         self.channels = []
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), self.assertRaises(ValueError):
+        with patch('swap_service.RPC.call', side_effect=self.rpc), self.assertRaises(ValueError):
             create(self.config, 'lnxbtrt-fixture', 123000, self.directory)
 
     def test_lost_submission_reply_enters_recovery_not_another_start(self):
@@ -88,7 +88,7 @@ class ServiceTests(unittest.TestCase):
         def interrupted(_):
             save(path, {'phase': 'outgoing_started'})
             raise subprocess.TimeoutExpired(['sendpay'], 20)
-        with patch('swap_service.Lab.rpc', side_effect=self.rpc), \
+        with patch('swap_service.RPC.call', side_effect=self.rpc), \
                 patch('swap_service.reconcile', side_effect=interrupted) as start, \
                 patch('swap_service.watch', return_value=0) as watcher:
             self.assertEqual(serve(self.directory, threading.Event()), 0)

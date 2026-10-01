@@ -31,13 +31,16 @@ class Case:
 
 def cases():
     result = [Case('headers', (sys.executable, str(HERE / 'check_headers.py')))]
-    for name in ('service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
+    for name in ('reverse_invoice', 'remote_receiver', 'swap_rpc', 'service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
         result.append(Case('unit-' + name.replace('_', '-'),
                            (sys.executable, str(HERE / ('test_' + name + '.py')), '-v')))
     for name in ('run-block_blake2b', 'run-bitcoin_block_from_hex'):
         result.append(Case(name, (str(ROOT / 'bitcoin/test' / name),)))
     result.append(Case('run-xbt-maturity', (str(ROOT / 'common/test/run-xbt-maturity'),)))
     result.append(Case('isolation', (sys.executable, str(HERE / 'smoke_regtest.py')), True))
+    for flag, name in (('', 'reverse-swap'), ('--fail-outgoing', 'reverse-swap-rejection')):
+        result.append(Case(name, (sys.executable, str(HERE / 'reverse_regtest.py')) +
+                           ((flag,) if flag else ()), True))
     for mode in ('', 'force-close', 'htlc-timeout', 'preimage-claim'):
         result.append(Case('funded-' + (mode or 'mutual-close'),
                            (sys.executable, str(HERE / 'funded_regtest.py')) +

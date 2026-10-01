@@ -76,7 +76,7 @@ class ServiceTests(unittest.TestCase):
         path = self.root/'state.json'
         save(path, {'phase':'prepared'})
         before = path.read_bytes()
-        with patch('swap_controller.Lab.rpc') as rpc:
+        with patch('swap_controller.RPC.call') as rpc:
             result = run(path, recover_only=True)
         rpc.assert_not_called()
         self.assertEqual(result['outcome'], 'needs_manual_start')
@@ -84,7 +84,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_monitor_requests_recovery_only_and_omits_preimage(self):
         self.quote('outgoing_started')
-        with patch('service_runtime.Lab.rpc', side_effect=self.rpc), \
+        with patch('service_runtime.RPC.call', side_effect=self.rpc), \
                 patch('service_runtime.run', return_value={'phase':'btc_released','payment_preimage':'SECRET'}) as recover:
             health = tick(self.settings)
         self.assertTrue(health['nodes_ready'])
@@ -97,7 +97,7 @@ class ServiceTests(unittest.TestCase):
             if cli == ['receiver']:
                 raise TimeoutError()
             return self.rpc(cli, method, *args)
-        with patch('service_runtime.Lab.rpc', side_effect=rpc), patch('service_runtime.run', return_value={'outcome':'pending'}) as recover:
+        with patch('service_runtime.RPC.call', side_effect=rpc), patch('service_runtime.run', return_value={'outcome':'pending'}) as recover:
             health = tick(self.settings)
         recover.assert_called_once()
         self.assertFalse(health['nodes_ready'])
@@ -105,7 +105,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_accepted_without_state_never_creates_state_or_submits(self):
         directory = self.quote()
-        with patch('service_runtime.Lab.rpc', side_effect=self.rpc), patch('service_runtime.run') as recover:
+        with patch('service_runtime.RPC.call', side_effect=self.rpc), patch('service_runtime.run') as recover:
             health = tick(self.settings)
         recover.assert_not_called()
         self.assertFalse((directory/'state.json').exists())
@@ -116,7 +116,7 @@ class ServiceTests(unittest.TestCase):
         state = json.loads((directory/'state.json').read_text())
         state['btc_cli'] = ['other']
         save(directory/'state.json', state)
-        with patch('service_runtime.Lab.rpc', side_effect=self.rpc), patch('service_runtime.run') as recover:
+        with patch('service_runtime.RPC.call', side_effect=self.rpc), patch('service_runtime.run') as recover:
             health = tick(self.settings)
         recover.assert_not_called()
         self.assertEqual(health['swaps'][0]['outcome'], 'needs_inspection')

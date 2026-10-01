@@ -57,7 +57,7 @@ class DeadlineTests(unittest.TestCase):
         raise AssertionError('unexpected RPC: ' + method)
 
     def reconcile(self):
-        with patch('swap_controller.Lab.rpc', side_effect=self.rpc):
+        with patch('swap_controller.RPC.call', side_effect=self.rpc):
             return run(self.path)
 
     def test_boundary_and_repeated_recovery(self):
