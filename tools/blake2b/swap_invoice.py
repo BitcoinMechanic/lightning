@@ -53,8 +53,13 @@ def byte_words(raw):
 
 
 def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry=3600,
-                     currency="bcrt", final_cltv=120):
-    if currency not in ('bc', 'bcrt', 'xbtrt') or type(final_cltv) is not int or not 1 <= final_cltv <= 2016:
+                     currency="bcrt", final_cltv=120, live_reverse=False):
+    if currency == 'xbt':
+        if live_reverse is not True:
+            raise ValueError('live reverse invoice requires explicit activation')
+        from reverse_live import enabled
+        enabled()
+    if currency not in ('bc', 'bcrt', 'xbtrt', 'xbt') or type(final_cltv) is not int or not 1 <= final_cltv <= 2016:
         raise ValueError('unsupported invoice network or CLTV')
     if type(amount_msat) is not int or not 0 < amount_msat <= 2100000000000000000:
         raise ValueError('invalid invoice amount')
@@ -74,7 +79,8 @@ def unsigned_invoice(payment_hash, payment_secret, amount_msat=100000000, expiry
 
     tag('p', byte_words(raw_hash))
     tag('s', byte_words(raw_secret))
-    description = (b'Regtest swap: pay XBT, receive BTC' if currency == 'xbtrt'
+    description = (b'Experimental swap: pay XBT, receive BTC' if currency == 'xbt'
+                   else b'Regtest swap: pay XBT, receive BTC' if currency == 'xbtrt'
                    else b'Regtest swap: pay BTC, receive XBT' if currency == 'bcrt'
                    else b'Experimental swap: pay BTC, receive XBT')
     tag('d', byte_words(description))

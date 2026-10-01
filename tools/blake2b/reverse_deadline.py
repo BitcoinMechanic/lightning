@@ -1,27 +1,35 @@
-"""Opt-in XBT deadline close for the fixed reverse regtest profile.
+"""Opt-in XBT deadline close for regtest and the dormant bounded live profile.
 
 Called under the controller lock only after the original BTC attempt is
 verified pending. Thirty XBT blocks is a test policy, not a guarantee about
-independent live chains. This module never sends or resolves a payment.
+independent live chains. The explicit live profile uses the 144-block reserve
+and can also act on an observed model-margin breach. This module never sends
+or resolves a payment.
 """
 
 
 def protect(path, state, rpc, save, gate):
     if state.get('xbt_deadline_guard') is not True:
         return
-    if (state.get('profile') != 'reverse-regtest-v1' or state['phase'] != 'outgoing_started'
+    live = state.get('profile') in ('reverse-live-v1', 'reverse-service-regtest-v1')
+    if live:
+        from reverse_live import verify_state, networks
+        verify_state(state, rpc)
+    if (state.get('profile') not in ('reverse-regtest-v1', 'reverse-live-v1', 'reverse-service-regtest-v1') or state['phase'] != 'outgoing_started'
             or not state.get('durable_gate') or state.get('xbt_onchain_claim') is not True):
         raise RuntimeError('reverse deadline requires a pending durable regtest swap')
     cli = state['xbt_cli']
     info = rpc(cli, 'getinfo')
-    if info['network'] != 'xbt-regtest' or info['id'] != state['node_ids'][0]:
+    if info['network'] != (networks(state['profile'])['xbt'] if live else 'xbt-regtest') or info['id'] != state['node_ids'][0]:
         raise RuntimeError('reverse deadline operator identity mismatch')
     # The controller also checks full immutable quote terms via gate_status.
     if (gate['phase'] != 'held' or gate['payment_hash'] != state['payment_hash']
             or gate['binding'] != state['xbt_binding'] or gate['cltv_expiry'] != state['xbt_expiry']):
         raise RuntimeError('reverse deadline quote binding mismatch')
     intent = state.get('xbt_close_intent')
-    if intent is None and state['xbt_expiry'] - info['blockheight'] > 30:
+    margin_breached = live and state.get('pending_timing', {}).get('model_margin_breached') is True
+    if (intent is None and not margin_breached
+            and state['xbt_expiry'] - info['blockheight'] > (144 if live else 30)):
         return
     pin = state.get('incoming_channel')
     keys = {'channel_id', 'funding_txid', 'funding_outnum', 'peer_id', 'short_channel_id'}

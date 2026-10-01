@@ -1,4 +1,4 @@
-"""Durable single-part XBT quote gate. XBT regtest only; no automatic BTC spending.
+"""Durable single-part XBT quote gate. Regtest default; dormant explicit live mode.
 
 Quotes and terminal intent live beside this plugin. The harness copies
 quote_plugin.py alongside it for shared CLTV/replay validation and atomic I/O.
@@ -19,7 +19,14 @@ def admission(terms, htlc, onion, now):
     return validation_error(mapped, htlc, onion, now)
 
 
-def validate_terms(terms):
+def validate_terms(terms, live=False, service_regtest=False):
+    if live or service_regtest:
+        from reverse_live import PROFILE, SERVICE_REGTEST, enabled, validate_terms as validate_live_terms
+        expected = PROFILE if live else SERVICE_REGTEST
+        enabled(expected)
+        if terms.get('profile') != expected:
+            raise ValueError('reverse gate profile mismatch')
+        return validate_live_terms(terms)
     required = {'payment_hash', 'payment_secret', 'xbt_amount_msat', 'btc_amount_msat',
                 'btc_invoice', 'xbt_channel', 'expires_at', 'min_cltv_delta', 'max_cltv_delta'}
     if set(terms) != required:
@@ -39,7 +46,11 @@ def validate_terms(terms):
 
 
 class Gate:
-    def __init__(self, path):
+    def __init__(self, path, live=False, service_regtest=False):
+        if live and service_regtest:
+            raise ValueError('choose exactly one gate profile')
+        self.service_regtest = service_regtest
+        self.live = live
         self.path = path
         self.quotes = json.loads(path.read_text()) if path.exists() else {}
         self.pending = {}
@@ -57,13 +68,21 @@ class Gate:
             methods = [('reverse-register', 'quote'), ('reverse-status', 'payment_hash'),
                        ('reverse-release', 'payment_hash binding preimage'),
                        ('reverse-fail', 'payment_hash binding'), ('xbt-held', '')]
+            if self.live:
+                methods.append(('reverse-pilot-info', ''))
             reply(request, dict(options=[], rpcmethods=[dict(name=n, usage=u, description='Reverse regtest gate')
                                                         for n, u in methods],
                                 subscriptions=[], hooks=[{'name': 'htlc_accepted'}],
                                 dynamic=True, nonnumericids=True))
             return replies
         if method == 'init':
-            self.active = params['configuration']['network'] == 'xbt-regtest'
+            self.active = params['configuration']['network'] == ('xbt' if self.live else 'xbt-regtest')
+            if self.live:
+                from reverse_live import enabled
+                try:
+                    enabled()
+                except RuntimeError:
+                    self.active = False
             reply(request, {} if self.active else {'disable': 'reverse gate requires XBT regtest'})
             return replies
         if not self.active:
@@ -72,9 +91,11 @@ class Gate:
         def argument(index, key):
             return params[index] if isinstance(params, list) else params[key]
 
-        if method == 'reverse-register':
+        if method == 'reverse-pilot-info' and self.live:
+            reply(request, dict(profile='reverse-live-v1', gate_active=self.active))
+        elif method == 'reverse-register':
             terms = argument(0, 'quote')
-            validate_terms(terms)
+            validate_terms(terms, live=self.live, service_regtest=self.service_regtest)
             payment_hash = terms['payment_hash']
             old = self.quotes.get(payment_hash)
             if old:
@@ -94,6 +115,9 @@ class Gate:
             htlc, onion = params['htlc'], params['onion']
             payment_hash = htlc['payment_hash']
             entry = self.quotes.get(payment_hash)
+            if entry is None and (self.live or self.service_regtest):
+                reply(request, {'result': 'continue'})
+                return replies
             binding = [htlc['short_channel_id'], htlc['id']]
             snapshot = replay_identity(htlc, onion)
             if entry and entry.get('binding') == binding and entry['phase'] in ('held', 'resolved', 'failed'):
@@ -153,8 +177,8 @@ class Gate:
         return replies
 
 
-def main():
-    gate = Gate(Path(__file__).with_suffix('.quotes.json'))
+def main(path=None, live=False, service_regtest=False):
+    gate = Gate(path or Path(__file__).with_suffix('.quotes.json'), live=live, service_regtest=service_regtest)
     for line in sys.stdin:
         if not line.strip():
             continue

@@ -2,17 +2,21 @@
 
 Uses the pinned CLN getroutes schema, not pay/xpay or an automatic retry loop.
 Supports bounded BOLT11 route hints; no blinded paths or multipath payments.
+Explicit inspection mode permits read-only live route queries. Controller
+validation always uses the original regtest bounds.
 """
 import json
 import re
 import subprocess
 
 
-def limits(policy, *, _prefix=False):
+def limits(policy, *, _prefix=False, _inspection=False):
     if set(policy) != {'source', 'destination', 'max_fee_msat', 'max_delay', 'max_hops', 'final_cltv'}:
         raise ValueError('unexpected reverse route policy')
-    for key, low, high in (('max_fee_msat', 0, 10000), ('max_delay', 1, 80),
-                            ('max_hops', 1, 4), ('final_cltv', 1, 80 if _prefix else 40)):
+    for key, low, high in (('max_fee_msat', 0, 100000 if _inspection else 10000),
+                            ('max_delay', 1, 2016 if _inspection else 80),
+                            ('max_hops', 1, 8 if _inspection else 4),
+                            ('final_cltv', 1, (2016 if _prefix else 144) if _inspection else (80 if _prefix else 40))):
         if type(policy[key]) is not int or not low <= policy[key] <= high:
             raise ValueError('reverse route policy exceeds regtest limits')
     if (not all(isinstance(policy[k], str) and policy[k] for k in ('source', 'destination'))
@@ -20,10 +24,11 @@ def limits(policy, *, _prefix=False):
         raise ValueError('invalid reverse route endpoints or delay bounds')
 
 
-def validate(route, amount_msat, policy, *, _prefix=False):
-    limits(policy, _prefix=_prefix)
-    maximum = 100010000 if _prefix else 100000000
-    if type(amount_msat) is not int or not 100000000 <= amount_msat <= maximum:
+def validate(route, amount_msat, policy, *, _prefix=False, _inspection=False):
+    limits(policy, _prefix=_prefix, _inspection=_inspection)
+    minimum = 1000 if _inspection else 100000000
+    maximum = (10100000 if _prefix else 10000000) if _inspection else (100010000 if _prefix else 100000000)
+    if type(amount_msat) is not int or not minimum <= amount_msat <= maximum:
         raise ValueError('unsupported reverse routed fixture amount')
     if not isinstance(route, list) or not 1 <= len(route) <= policy['max_hops']:
         raise ValueError('reverse route hop count outside bounds')
@@ -54,8 +59,8 @@ def validate(route, amount_msat, policy, *, _prefix=False):
     return fee
 
 
-def convert(result, amount_msat, policy, *, _prefix=False):
-    limits(policy, _prefix=_prefix)
+def convert(result, amount_msat, policy, *, _prefix=False, _inspection=False):
+    limits(policy, _prefix=_prefix, _inspection=_inspection)
     routes = result['routes']
     if len(routes) != 1:
         raise ValueError('reverse fixture requires exactly one route')
@@ -87,7 +92,7 @@ def convert(result, amount_msat, policy, *, _prefix=False):
         route.append(dict(id=hop['node_id_out'], channel=channel,
                           amount_msat=hop['amount_out_msat'], delay=hop['cltv_out']))
         previous = hop
-    validate(route, amount_msat, policy, _prefix=_prefix)
+    validate(route, amount_msat, policy, _prefix=_prefix, _inspection=_inspection)
     return route
 
 
@@ -106,6 +111,20 @@ def no_route(error):
     try:
         reply = json.loads(error.stdout)
         return isinstance(reply, dict) and reply.get('code') == 205
+    except (ValueError, TypeError):
+        return False
+
+
+def bounded_route_failure(error, *, _inspection=False):
+    # Wider fallback is read-only inspection only. Controller semantics stay
+    # unchanged; transport errors and other RPC failures must propagate.
+    if no_route(error):
+        return True
+    if not _inspection:
+        return False
+    try:
+        reply = json.loads(error.stdout)
+        return isinstance(reply, dict) and reply.get('code') == 206
     except (ValueError, TypeError):
         return False
 
@@ -146,29 +165,31 @@ def hinted_tail(hint, amount, policy):
     return tail, destination, amount, delay
 
 
-def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4):
+def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4, *, _inspection=False, _service_regtest=False):
+    amount = decoded.get('amount_msat')
+    valid_amount = type(amount) is int and (
+        (1000 <= amount <= 10000000 and amount % 1000 == 0) if _inspection else amount == 100000000)
     if (decoded.get('valid') is not True or decoded.get('type') != 'bolt11 invoice'
-            or decoded.get('currency') != 'bcrt' or not decoded.get('payment_secret')
-            or type(decoded.get('amount_msat')) is not int or decoded['amount_msat'] != 100000000
+            or decoded.get('currency') != ('bc' if _inspection and not _service_regtest else 'bcrt') or not decoded.get('payment_secret')
+            or not valid_amount
             or type(decoded.get('min_final_cltv_expiry')) is not int
             or decoded['min_final_cltv_expiry'] < 0):
         raise ValueError('reverse route planning requires a signed BTC regtest fixture invoice')
-    amount = decoded['amount_msat']
     policy = dict(source=source, destination=decoded['payee'], max_fee_msat=max_fee_msat,
                   max_delay=max_delay, max_hops=max_hops,
                   final_cltv=max(40, decoded['min_final_cltv_expiry']))
-    limits(policy)
+    limits(policy, _inspection=_inspection)
     hints = decoded.get('routes', [])
     if not isinstance(hints, list) or len(hints) > 8:
         raise ValueError('too many or malformed reverse invoice hints')
     try:
         result = query(cli, amount, policy, rpc)
     except subprocess.CalledProcessError as error:
-        if not no_route(error):
+        if not bounded_route_failure(error, _inspection=_inspection):
             raise
         unavailable = error
     else:
-        return convert(result, amount, policy), policy
+        return convert(result, amount, policy, _inspection=_inspection), policy
     # Hints are alternative tails, not a reason to mutate public gossip or
     # create shared askrene layers. Try at most eight; choose the first fit.
     for hint in hints:
@@ -180,7 +201,7 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4
             prefix_policy = dict(policy, destination=entry, max_fee_msat=max_fee_msat-fee,
                                  final_cltv=entry_delay, max_hops=max_hops-len(tail))
             if entry != source:
-                limits(prefix_policy, _prefix=True)
+                limits(prefix_policy, _prefix=True, _inspection=_inspection)
         except ValueError:
             continue
         prefix = []
@@ -188,13 +209,13 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4
             try:
                 result = query(cli, entry_amount, prefix_policy, rpc)
             except subprocess.CalledProcessError as error:
-                if not no_route(error):
+                if not bounded_route_failure(error, _inspection=_inspection):
                     raise
                 continue
-            prefix = convert(result, entry_amount, prefix_policy, _prefix=True)
+            prefix = convert(result, entry_amount, prefix_policy, _prefix=True, _inspection=_inspection)
         route = prefix + tail
         try:
-            validate(route, amount, policy)
+            validate(route, amount, policy, _inspection=_inspection)
         except ValueError:
             continue  # A public prefix can intersect the private tail.
         return route, policy

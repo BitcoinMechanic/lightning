@@ -34,7 +34,7 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 46)
+        self.assertEqual(sum(c.live for c in catalog), 49)
 
     def test_exit_codes_and_missing_executable(self):
         with tempfile.TemporaryDirectory() as directory:

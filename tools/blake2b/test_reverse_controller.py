@@ -40,6 +40,7 @@ class ReverseTests(unittest.TestCase):
         self.held = True
         self.payments = []
         self.calls = []
+        self.send_args = []
         self.networks = {'/xbt': 'xbt-regtest', '/btc': 'regtest'}
         self.height = 100
         self.fail_send = self.fail_release = self.fail_fail = False
@@ -78,6 +79,11 @@ class ReverseTests(unittest.TestCase):
         if method == 'listsendpays':
             return {'payments': self.payments}
         if method == 'sendpay':
+            self.send_args.append(args)
+            disk_metadata = json.loads(self.path.read_text()).get('btc_payment_metadata')
+            metadata_args = [a for a in args if a.startswith('payment_metadata=')]
+            self.assertEqual(metadata_args, [] if disk_metadata is None else
+                             ['payment_metadata='+disk_metadata])
             self.assertEqual(json.loads(self.path.read_text())['phase'], 'outgoing_started')
             self.assertFalse(self.payments)
             self.payments = [self.attempt()]
@@ -107,6 +113,55 @@ class ReverseTests(unittest.TestCase):
     def run_controller(self, **kwargs):
         with patch('reverse_controller.RPC.call', side_effect=self.rpc):
             return controller.run(self.path, **kwargs)
+
+    def test_metadata_saved_before_send_and_recovered_without_resend(self):
+        self.decoded['payment_metadata'] = '00Aa55ff'
+        self.decoded['features'] = hex((1 << 8) | (1 << 14) | (1 << 48))[2:]
+        self.fail_send = True
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_controller()
+        checkpoint = self.path.read_bytes()
+        self.assertEqual(json.loads(checkpoint)['btc_payment_metadata'], '00Aa55ff')
+        self.assertIn('payment_metadata=00Aa55ff', self.send_args[0])
+        self.assertEqual(self.run_controller()['outcome'], 'pending')
+        self.assertEqual(self.path.read_bytes(), checkpoint)
+        self.payments = [self.attempt('complete')]
+        self.assertEqual(self.run_controller()['phase'], 'xbt_released')
+        self.assertEqual(self.calls.count('sendpay'), 1)
+
+    def test_empty_metadata_is_explicit_and_absent_metadata_omitted(self):
+        self.decoded['payment_metadata'] = ''
+        self.run_controller()
+        self.assertIn('payment_metadata=', self.send_args[0])
+
+    def test_absent_metadata_preserves_legacy_send(self):
+        self.run_controller()
+        self.assertFalse(any(a.startswith('payment_metadata=') for a in self.send_args[0]))
+
+    def test_metadata_changed_or_missing_pin_refused_before_send(self):
+        for pinned, decoded in [('aa', 'bb'), ('aa', None), (None, 'aa')]:
+            self.write(btc_payment_metadata=pinned)
+            self.decoded['payment_metadata'] = decoded
+            before = self.path.read_bytes()
+            with self.assertRaises(RuntimeError):
+                self.run_controller()
+            self.assertEqual(before, self.path.read_bytes())
+        self.assertNotIn('sendpay', self.calls)
+
+    def test_bad_metadata_and_required_features_never_send(self):
+        cases = [dict(payment_metadata=v) for v in ('z0', 'a', 'aa'*513, 7, True)]
+        cases += [dict(features=hex(1 << 48)[2:]),
+                  dict(features=hex(1 << 50)[2:]), dict(features='xyz')]
+        for change in cases:
+            original = self.decoded.copy()
+            self.decoded.update(change)
+            before = self.path.read_bytes()
+            with self.assertRaises(ValueError):
+                self.run_controller()
+            self.assertEqual(before, self.path.read_bytes())
+            self.decoded = original
+        self.assertNotIn('sendpay', self.calls)
+        self.assertFalse(set(self.calls) & {'xbt-release', 'xbt-fail'})
 
     def test_pending_recovery_preserves_checkpoint_and_sends_once(self):
         self.assertEqual(self.run_controller()['outcome'], 'pending')

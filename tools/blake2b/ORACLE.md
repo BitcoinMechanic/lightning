@@ -69,3 +69,43 @@ The result is momentary, not a reservation, signed invoice, or authorization
 to spend. The separate market profile requires explicit enablement (MARKET-SWAPS.md);
 the fixed pilot profiles still enforce their original amounts. Funding and exchange price
 changes can invalidate any reported range.
+
+
+## Reverse XBT-to-BTC read-only pricing
+
+```sh
+.venv/bin/python tools/blake2b/reverse_oracle.py \
+  --btc-sats 1500 --max-routing-fee-sats 10 --margin-bps 100
+```
+
+This prices receipt of XBT in exchange for a 1,500-sat BTC payment, with a
+10-sat maximum BTC routing-fee allowance and 1% operator markup on their sum.
+It takes an amount only: no private invoice, credentials or node identifiers
+are needed. It performs no Lightning RPCs, creates no invoice or swap, changes
+no service configuration, and places no exchange order.
+
+Unlike the forward replacement-cost estimate, reverse pricing uses ordinary
+**bids**: indicative BTC proceeds from selling the received XBT. The target is
+`(btc_sats + max_routing_fee_sats) * (1 + margin_bps / 10000)` BTC sats. Starting
+at the best limit bid, it finds enough whole XBT sats to cover that target.
+Exact rational arithmetic avoids float/rounding shortfalls. Available depth is
+rounded down to whole XBT sats; the final required fill rounds up. AMM samples
+are excluded. The full routing allowance is priced, even when an eventual route
+might cost less. This reader does not determine or enforce an actual route.
+
+The output distinguishes the receiver's BTC amount, maximum routing fee, BTC
+budget, marked-up target proceeds, required XBT, and estimated bid proceeds.
+It includes fills, timestamps and the average BTC-per-XBT bid price. Exchange
+trading and withdrawal fees remain excluded. This is indicative book pricing,
+not guaranteed executable proceeds or a liquidity reservation.
+
+The existing 30-second ticker age, 5% spread and 1% slippage defaults apply.
+For bids, slippage is the average sale price falling below the ticker best bid.
+Optional BTC-per-XBT price bounds remain available. The book itself lacks a
+source timestamp; two REST responses are not an atomic snapshot. HTTPS and
+redirect protections are inherited from the forward oracle reader. There is
+no cached-price fallback when data fails validation.
+
+This does not establish live swap feasibility: the route, channel capacities,
+untrimmed HTLC minimums and live timing policy are not checked. Neither the
+forward market profile nor the regtest-only reverse controller is modified.

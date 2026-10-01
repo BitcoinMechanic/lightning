@@ -33,6 +33,54 @@ def prefix(source=A, destination=B, amount=100005000, delay=46):
 
 
 class HintTests(unittest.TestCase):
+    def test_inspection_368_block_hint_route_and_exact_boundary(self):
+        invoice = decoded([[hint(D, delta=144)]])
+        invoice.update(currency='bc', amount_msat=1500000,
+                       min_final_cltv_expiry=144)
+        public_prefix = dict(routes=[dict(amount_msat=1505000,
+            final_cltv=288, path=[
+                dict(short_channel_id_dir='1x1x0/0', node_id_in=A,
+                     node_id_out=B, amount_in_msat=1505000,
+                     amount_out_msat=1505000, cltv_in=368, cltv_out=368),
+                dict(short_channel_id_dir='2x1x0/0', node_id_in=B,
+                     node_id_out=D, amount_in_msat=1505000,
+                     amount_out_msat=1505000, cltv_in=368, cltv_out=288)])])
+        for cap in (368, 576):
+            rpc = Mock(side_effect=[unavailable(206), public_prefix])
+            route, policy = plan(['/btc'], invoice, A, rpc,
+                                 max_delay=cap, _inspection=True)
+            self.assertEqual(route[0]['delay'], 368)
+            self.assertEqual(route[-1]['delay'], 144)
+            self.assertEqual(validate(route, 1500000, policy,
+                                      _inspection=True), 5000)
+            self.assertIn('final_cltv=288', rpc.call_args.args)
+            self.assertIn('maxdelay='+str(cap), rpc.call_args.args)
+        rpc = Mock(side_effect=[unavailable(206), public_prefix])
+        with self.assertRaises(ValueError):
+            plan(['/btc'], invoice, A, rpc, max_delay=367, _inspection=True)
+
+    def test_inspection_prefix_206_tries_next_hint_without_relaxing_caps(self):
+        invoice = decoded([[hint()], [hint()]])
+        invoice.update(currency='bc', amount_msat=1500000)
+        rpc = Mock(side_effect=[unavailable(206), unavailable(206),
+                               prefix(amount=1505000)])
+        route, policy = plan(['/btc'], invoice, A, rpc,
+                             max_delay=576, _inspection=True)
+        self.assertEqual(len(route), 2)
+        self.assertEqual(rpc.call_count, 3)
+        for call in rpc.call_args_list:
+            self.assertIn('maxdelay=576', call.args)
+            self.assertEqual(call.args[1], 'getroutes')
+
+    def test_inspection_transport_and_other_errors_never_fallback(self):
+        invoice = decoded()
+        invoice.update(currency='bc', amount_msat=1500000)
+        for code in (215, 500, -32603):
+            rpc = Mock(side_effect=unavailable(code))
+            with self.assertRaises(subprocess.CalledProcessError):
+                plan(['/btc'], invoice, A, rpc, max_delay=576, _inspection=True)
+            rpc.assert_called_once()
+
     def test_private_tail_fee_delay_and_residual_budget(self):
         rpc = Mock(side_effect=[unavailable(), prefix()])
         route, policy = plan(['/btc'], decoded(), A, rpc)

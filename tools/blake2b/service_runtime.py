@@ -32,6 +32,10 @@ def node_command(settings, directory, role):
         args = [str(tools/'live_node.py'), '--lightning-dir='+str(root),
                 '--bitcoin-cli='+settings['bitcoin_cli'],
                 '--local-peer-port='+('19835' if role == 'receiver' else '19836')]
+    if role == 'xbt':
+        from reverse_activation import configured
+        if configured(settings):
+            args.append('--reverse-settings='+str(directory/'settings.json'))
     return [settings['python'], *args], dict(os.environ, **values)
 
 
@@ -39,8 +43,10 @@ def tick(settings):
     health = {'checked_at': int(time.time()), 'nodes_ready': False, 'xbt_connected': False,
               'swaps': []}
     try:
+        from reverse_live import PROFILE, networks
+        net = networks(settings.get('reverse_profile', PROFILE))
         infos = [RPC.call(settings[key], 'getinfo') for key in ('btc_cli', 'xbt_cli')]
-        if ([i['network'] for i in infos] != ['bitcoin', 'xbt']
+        if ([i['network'] for i in infos] != [net['btc'], net['xbt']]
                 or [i['id'] for i in infos] != settings['node_ids']):
             health['error'] = 'node_identity_mismatch'
             return health
@@ -51,7 +57,7 @@ def tick(settings):
         return health
     try:
         receiver = RPC.call(settings['receiver_cli'], 'getinfo')
-        if receiver['network'] != 'xbt' or receiver['id'] != settings['receiver_id']:
+        if receiver['network'] != net['xbt'] or receiver['id'] != settings['receiver_id']:
             raise ValueError('receiver identity mismatch')
         health['nodes_ready'] = True
         peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
@@ -97,6 +103,21 @@ def tick(settings):
                 result = run(path, recover_only=True)
                 report.update({k: result[k] for k in ('phase', 'outcome') if k in result})
             health['swaps'].append(report)
+        except Exception:
+            health['swaps'].append(dict(report, outcome='needs_inspection'))
+    for quote_path in sorted(root.glob('*/reverse-quote.json')):
+        report = {'directory': str(quote_path.parent.relative_to(root)), 'direction': 'xbt-to-btc'}
+        try:
+            if not quote_path.resolve().is_relative_to(root):
+                raise ValueError('reverse quote outside recovery root')
+            path = quote_path.parent/'reverse-state.json'
+            if path.exists() and not path.resolve().is_relative_to(root):
+                raise ValueError('reverse state outside recovery root')
+            from reverse_service import recover_record
+            result = recover_record(quote_path.parent, settings)
+            if result.get('phase') not in ('xbt_released', 'xbt_failed'):
+                report.update(result)
+                health['swaps'].append(report)
         except Exception:
             health['swaps'].append(dict(report, outcome='needs_inspection'))
     return health

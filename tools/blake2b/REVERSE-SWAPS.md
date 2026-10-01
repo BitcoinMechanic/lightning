@@ -345,3 +345,293 @@ fees apply. This patch adds fixtures and leaves controller behavior unchanged.
 These are controlled, direct-channel regtests. They do not cover both chains
 closing simultaneously, reorgs, or arbitrary live chain stalls. Live reverse
 swaps remain disabled.
+
+
+## Read-only reverse market reference
+
+`reverse_oracle.py` prices a specified whole-sat BTC amount plus an explicit
+maximum routing-fee allowance from Neoxa's ordinary bid depth, with an operator
+markup and upward whole-sat XBT rounding. See ORACLE.md for the command and
+accounting. It calls only the public exchange API, not any Lightning node.
+This is a separate price inspection tool: it does not change the regtest
+controller's fixed amounts, create a reverse quote, or enable live payments.
+
+
+## Read-only live invoice and channel inspection
+
+`reverse_check.py` inspects a local BTC BOLT11 invoice without sending payments,
+creating quotes, connecting peers, reserving routes, changing gossip layers or
+writing swap state. It uses only getinfo, decode, listpeerchannels, listfunds and
+getroutes, plus the public Neoxa API. It creates no service and restarts no node.
+
+Default roles on this tower are:
+
+| Role | Lightning directory | Network |
+| --- | --- | --- |
+| BTC operator | ~/cln-btc-observe | bitcoin |
+| XBT operator | ~/cln-xbt-observe | xbt |
+| XBT payer (former receiver) | ~/cln-xbt-peer | xbt |
+
+Overrides are `--btc-dir`, `--xbt-operator-dir`, and `--xbt-payer-dir`. These are
+read-only local RPC targets, not a saved or trusted live payment configuration.
+A future live workflow must persist explicit identities and channel bindings.
+
+Use a fresh fixed-amount BTC BOLT11 invoice, initially 1,500 sats. Store it in a
+local file owned by your user with no group/other permissions (0600). Symlinks,
+multiple invoices and files over 32 KiB are refused. The invoice is not sent to
+Neoxa, printed in the result, or placed in a swap record. It is passed to the
+local lightning-cli decode command; privileged local process inspection and
+CLN logs are outside the output-redaction boundary.
+
+```sh
+.venv/bin/python tools/blake2b/reverse_check.py \
+  --invoice-file "$HOME/cln-live-pilot/btc-invoice-1.txt" \
+  --max-routing-fee-sats 10 --margin-bps 100
+```
+
+The inspection accepts whole-sat BTC amounts up to 10,000 sats, an explicit fee
+allowance up to 100 sats, and an estimated XBT cap of 500,000 sats by default.
+It checks the signature, currency, required invoice features, payment secret,
+expiry (at least two minutes left), and final CLTV (at most 144 blocks). BOLT12 and unsupported required feature bits are refused. Well-formed BOLT11
+payment metadata up to 512 bytes is accepted for inspection, including required
+feature bit 48; that bit without decoded metadata is refused. The report exposes
+only whether metadata is present, never its contents. Optional
+MPP does not require splitting: this check selects only a single-part route.
+
+The route is limited to eight hops and defaults to 288 outgoing blocks, including
+ordinary private BOLT11 hints. Read-only inspection accepts `--max-delay` from
+1 to 2016 blocks; for the Phoenix pilot use an explicit `--max-delay 576`.
+Inspection tries private hints after bounded public-route failures (205 or 206),
+without increasing the chosen fee or delay caps. These are inspection bounds, not an approved live swap
+timelock policy. The regtest controller and its default route validation retain
+the original fixed amounts and narrower limits; live payment remains disabled.
+
+The report compares the market XBT charge against the payer's spendable and
+operator's receivable balance on the same funding channel, checks conservative
+untrimmed minimums at both XBT endpoints and the BTC first hop, includes fees in
+BTC spendable capacity, and reports the existing 50,000-sat confirmed unreserved
+operator reserve check. Historical closed channels are ignored, but multiple
+normal channels between the XBT nodes are treated as ambiguous.
+
+The inspector queries `listchannels` separately for each remote hop's short
+channel ID, and matches its exact source and destination direction. It checks
+advertised HTLC minimum/maximum, enabled status, fee and CLTV delta against the
+amount and delay on that hop. Known violations make `feasible` false. Missing
+policies also make it false, with a separate unknown-hop count: BOLT11 private
+hints contain fees and delays but no HTLC minimum or maximum. A missing policy
+is not evidence that a payment would fail, nor permission to mark it verified.
+Transport errors and malformed or ambiguous policies abort inspection.
+
+`remote_btc_htlc_minima_checked` means all remote hop policies were available;
+`remote_btc_htlc_limits_passed` additionally requires no policy violations.
+Neither field establishes actual remote liquidity or freshness of gossip.
+
+`feasible` means only these read-only checks passed. No remote BTC channel's
+dust/untrimmed minimum is known, no liquidity is reserved, and no live independent-
+chain timing policy is validated. The selected route can still fail. The result
+explicitly reports these limits and omits payment hashes, secrets, invoices,
+node IDs, channel IDs and funding outpoints. A route/amount infeasibility is a
+normal result; RPC, malformed data and invoice errors exit nonzero with redacted
+messages. A stale price or invoice during inspection requires a fresh check.
+
+
+Payment metadata is opaque receiver data, not something to discard. The pinned
+CLN `sendpay` schema accepts `payment_metadata` as hex and the implementation
+places it in the final onion hop. Passing `bolt11` alone does not supply those
+bytes. The read-only inspection does not construct an onion, verify full onion
+payload size, persist metadata or call sendpay. A future live reverse workflow
+must bind it to the signed invoice and forward it unchanged. The reverse regtest
+controller now validates and checkpoints metadata before submission, and passes
+it explicitly to sendpay. Recovery continues to reconcile the original attempt
+without resending. Live reverse execution remains disabled.
+
+
+## Candidate reverse timing policy (read-only)
+
+`reverse_timing.py` contains a proposed risk budget, not approved live execution.
+The matching Knots tag `v29.4.2.knots20260508` retains a 600-second mainnet target
+spacing (`src/kernel/chainparams.cpp`). That target does not bound actual block
+arrival times. No finite expiry gap guarantees safety if BTC stalls while XBT
+keeps progressing, or XBT accelerates sufficiently. Closing the XBT channel
+cannot create a missing BTC preimage or extend the incoming HTLC expiry.
+
+The v2 candidate uses a 1:1 expected block pace because both chains target
+ten-minute blocks. This is not a maximum relative rate or a guarantee. Recovery
+headroom is an explicit separate 144-XBT-block margin; the earlier arbitrary
+four-to-one stress multiplier has been removed. The model version changes, so
+v1 proposals are rejected rather than silently reinterpreted by pre-spend checks.
+
+- Minimum incoming XBT blocks remaining: `BTC route delay + 6 + 144`.
+- The six BTC blocks provide submission-height slack at the expected 1:1 pace.
+- Proposed invoice delta: that minimum plus 24 XBT blocks of quote drift.
+- Maximum incoming delta: 2016, matching the pinned CLN default HTLC CLTV cap.
+- Maximum supported BTC route delay under those constants: 1842 blocks.
+
+For the observed 448-block route this gives a 598-block minimum and a 622-block
+invoice request. The 144-block reserve remains a proposed operational margin,
+not a measured statistical bound. A different route must be evaluated anew.
+The report never truncates the computed requirement to fit the maximum.
+
+While pending, the model requires `BTC blocks remaining + 144` XBT blocks
+remaining. Equal advancement preserves the margin; XBT-only advancement erodes
+it. Monitoring detects divergence but cannot guarantee recovery after arbitrary
+BTC stalls or XBT acceleration. Pending reports describe this condition only:
+automated live monitoring and response have not yet been integrated.
+
+`reverse_check.py` exposes the candidate under `timing_proposal`. It leaves
+`live_timing_policy_checked` and `live_payment_enabled` false. Passing arithmetic
+alone does not verify current chain progress, local payer maxdelay configuration,
+fee reserves over that lifetime, authenticated held HTLCs, or service monitoring.
+
+`pre_spend_report` consumes actual incoming expiry and fresh per-chain heights,
+without comparing absolute heights between chains. Its BTC planning upper expiry
+is not an observed outgoing HTLC expiry. Future submission integration must bind
+and persist the actual attempt and expiries. `pending_report` uses actual expiries
+to flag margin erosion and the recovery reserve. Neither a breach nor an elapsed
+BTC expiry proves payment failure; BTC outcome must still be reconciled before
+XBT can be failed. These helpers perform no RPC or state mutations and do not
+change the existing regtest deadline guard.
+
+## Dormant reverse service integration
+
+Patch 0074 adds `reverse_live.py` and `reverse_service.py`, plus explicit
+live-profile paths through the existing gate, controller and recovery scanner.
+`LIVE_EXECUTION_ENABLED` remains false. Do not change it manually: the node-backed
+integration and persistent gate launcher setup must be verified before activation.
+Applying this patch does not register a live quote, publish an invoice, restart a
+node or send funds. Existing regtest profiles retain their amounts and limits.
+
+The staged profile is restricted to a 1500-sat BTC invoice, at most 500000 XBT
+sats, a 30-sat BTC routing allowance, a 1% market margin, a 576-block route search
+cap and one immutable route per quote. Quotes last at most five minutes. The
+market snapshot is checked before quoting; an accepted price is not silently
+recalculated after receiving the incoming payment.
+
+Private-final policy is explicit in the quote: exactly one unknown remote policy
+may be accepted only if it is the last hop and belongs to an exact tail from the
+signed BTC invoice. All available policies still have to pass. This exception
+does not assert knowledge of that channel's HTLC limits or liquidity; a receiver
+rejection is handled as an outgoing payment failure. Unknown intermediate hops,
+wrong directions/channels and known policy violations remain disallowed.
+
+`quote` uses private service-manager settings, creates an exclusive directory
+immediately under the monitored swap root, saves terms before registration,
+registers the durable XBT gate, and verifies the signed XBT invoice before
+publishing it. A lost registration/signing reply leaves a private draft for
+inspection; it is not automatically deleted or re-quoted. No payer payment is
+originated by this service.
+
+`run` waits for the original held XBT HTLC, persists controller state and performs
+one explicitly started BTC attempt. It rechecks current timing, pinned identities,
+quote binding, metadata, reserves, first-hop capacity and remote advertised
+policies before spending. Submission is checkpointed before the RPC, including
+both original channel funding identities. Ambiguous outcomes never resend BTC.
+
+While pending, the controller records the original BTC HTLC ID and actual expiry
+when observable. Before that observation it uses the explicitly labelled planning
+upper expiry, including the six-block submission slack. Both chain heights feed
+the 1:1 candidate model; margin erosion or the 144-XBT-block reserve can trigger a
+close of the pinned incoming XBT channel. Closing cannot extend its HTLC expiry
+or eliminate cross-chain stall risk. BTC expiry alone never permits XBT failure.
+The existing verified-preimage path supports incoming on-chain claims.
+
+The existing recovery service recognizes `reverse-quote.json` and
+`reverse-state.json` separately from forward swaps. It validates service identities,
+serializes with manual service commands, and invokes controller recovery-only mode.
+It never registers/signs a quote or starts a prepared BTC payment. A held quote
+without controller state is reported as requiring manual start. Missing or
+inconsistent records require inspection.
+
+`abort-unspent` is restricted to an existing prepared state under both service and
+controller locks, with no recorded BTC attempt. It checkpoints cancellation before
+resolving the exact original XBT gate binding. Lost failure replies reconcile
+through durable gate status. Submitted or ambiguous BTC attempts cannot use this
+command. Unrelated XBT invoices continue through the live gate to normal CLN
+invoice handling.
+
+The integration tests use fake RPCs and temporary private state. They explicitly
+opt into the dormant profile only inside the test process; real-node activation
+is still blocked. No live execution or persistent plugin installation is claimed
+by these tests. Startup wiring and node-backed service validation remain the next
+activation gate.
+
+### Disposable-node reverse service rehearsal
+
+`reverse_service_regtest.py` exercises the actual quote, gate, controller and
+background recovery scanner on isolated Knots/CLN regtest nodes. Its explicit
+`reverse-service-regtest-v1` profile requires `regtest`/`xbt-regtest` identities
+and `bcrt`/`xbtrt` invoices. It never changes the disabled live activation flag.
+Only the market fetch uses a deterministic fixture; routing, signing, HTLCs,
+restarts, settlement and balance checks use real nodes.
+
+The service quotes a 1,500-sat BTC invoice through a private final-hop hint. The
+448-block BTC route produces the same 598-block admission minimum and 622-block
+XBT invoice as the live candidate timing policy. Successful and rejected payments
+restart both operators while pending, recover in fresh processes and then run
+the actual background scanner twice. All six channel-side balances, receiver
+invoice state and the identity of the single BTC attempt are checked.
+
+```sh
+.venv/bin/python tools/blake2b/test_reverse_service_profile.py -v
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --fail-outgoing
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --abort-unspent
+```
+
+The cancellation case advances only XBT after admission, verifies the original
+margin no longer permits spending, and returns the held XBT through
+`abort-unspent` without any BTC attempt. The suite includes all three cases.
+`tick` is an explicit single service step that can submit a prepared payment;
+`recover` is recovery-only and cannot start a prepared payment. Both retain the
+same profile activation and identity checks as `run`.
+
+These are disposable regtest commands. They do not install a live gate, change
+systemd services or enable the Phoenix payment. Persistent startup wiring and
+live activation remain separate work.
+
+### Explicit bounded live activation
+
+Patch 0076 adds `reverse_activation.py`. The live profile remains disabled by
+default unless the private service settings contain the exact activation record
+created by `install`. It binds the existing operator/payer identities, RPC command
+arrays, operator data directory and monitored swap root, with fixed 1,500 BTC sats,
+500,000 XBT sats maximum, 30 BTC sats routing allowance, 1% margin and a 576-block
+route cap. Existing quote validation, timing checks and recovery rules remain.
+
+```sh
+.venv/bin/python tools/blake2b/test_reverse_activation.py -v
+.venv/bin/python tools/blake2b/reverse_activation.py install
+systemctl --user restart cln-xbt-operator cln-swap-recovery
+.venv/bin/python tools/blake2b/reverse_activation.py status
+```
+
+The installer only reads node RPCs and writes private settings. It requires the
+existing XBT wallet, exact networks/identities, no pending HTLCs on the three nodes,
+and both operator recovery reserves. It saves `settings.before-reverse-live.json`
+before updating settings. It does not create a quote, pay, fund or close a channel.
+Do not restore that backup to disable recovery while a reverse payment is pending.
+
+Only the XBT operator launcher receives `--reverse-settings`. It creates an
+executable wrapper at `<operator-root>/reverse-live-gate.py`, uses persistent
+`reverse-live-gate.json` in the same directory, and loads it at every node start.
+The receiver and BTC operator launcher arguments are unchanged. Existing wrapper
+content that differs is refused. Unrelated incoming XBT HTLCs continue to CLN.
+`status` checks the operator identity and the live gate's `reverse-pilot-info`
+RPC, and prints only readiness and a held-HTLC count.
+
+Manual `reverse_service.py` live commands read the same private settings (default
+`~/.config/cln-swaps/settings.json`, overridable with `--settings`). Quote creation
+and manual execution activate only within the calling operation. Execution checks
+the directory and quote against the enabled service. The background worker scopes
+activation to recovery of a bound existing record; prepared or absent controller
+state still cannot originate a BTC attempt. Test profiles cannot substitute for
+live networks or change the activation record.
+
+After restart, check readiness and obtain a fresh read-only inspection of the
+unpaid BTC invoice before creating a new quote. Quote expiry, stale prices,
+insufficient route capacity or timing margin remain reasons to refuse payment.
+Keep invoice files and quote output private. Never reuse a directory or discard
+state after an uncertain payment outcome.

@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--bitcoin-cli', required=True, type=Path)
     parser.add_argument('--local-peer-port', type=int,
                         help='Accept Lightning peers on 127.0.0.1 only, instead of offline mode.')
+    parser.add_argument('--reverse-settings', type=Path, help='Private activated reverse-pilot settings for this operator only.')
     args = parser.parse_args()
     if args.local_peer_port is not None and not 1024 <= args.local_peer_port <= 65535:
         parser.error('local peer port must be between 1024 and 65535')
@@ -80,6 +81,9 @@ def main():
                         '--autoconnect-seeker-peers=0',
                         '--bind-addr=127.0.0.1:' + str(args.local_peer_port)])
         mode = 'localhost listener'
+    if args.reverse_settings is not None:
+        from reverse_activation import plugin
+        command.append('--plugin='+str(plugin(root, args.reverse_settings.expanduser().resolve())))
     print('Starting experimental XBT node (' + mode + '); log: ' + str(root / 'lightning.log'), flush=True)
     os.execv(str(lightningd), command)
 
