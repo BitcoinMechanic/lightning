@@ -177,3 +177,9 @@ paid invoice and reports the actual `returned_xbt_sats`.
 Offline tests cover invoice-reply loss, workflow locking, private output,
 immutable requests, automatic receipt checks, repayment reserve limits,
 repeated completion, lost submission replies and ambiguous missing attempts.
+
+## Background operation
+
+See SERVICES.md for user systemd units, private credential capture and
+reconciliation of already-started swaps after terminal closure or reboot.
+Prepared/unsubmitted swaps deliberately require manual foreground resume.

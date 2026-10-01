@@ -86,7 +86,7 @@ def check_spend(state):
 
 
 def run(path, crash_after_xbt=False, crash_after_btc=False, crash_after_sendpay=False,
-        wait_pending=False):
+        wait_pending=False, recover_only=False):
     # Lock a separate stable inode: save() atomically replaces the state file.
     # Never unlink the lock file, including on normal exit or recovery.
     # All controllers for this swap must use this same canonical state path;
@@ -99,14 +99,16 @@ def run(path, crash_after_xbt=False, crash_after_btc=False, crash_after_sendpay=
         except BlockingIOError:
             return {'outcome': 'busy'}
         return run_locked(path, crash_after_xbt, crash_after_btc,
-                          crash_after_sendpay, wait_pending)
+                          crash_after_sendpay, wait_pending, recover_only)
     finally:
         os.close(fd)  # The kernel also releases the lock after process death.
 
 
 def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_sendpay=False,
-               wait_pending=False):
+               wait_pending=False, recover_only=False):
     state = json.loads(path.read_text())
+    if recover_only and state['phase'] == 'prepared':
+        return {'phase': 'prepared', 'outcome': 'needs_manual_start'}
     pilot.verify_state(state, Lab.rpc)
     payment_hash = state['payment_hash']
     if state['phase'] == 'prepared':
