@@ -1,4 +1,4 @@
-"""Run existing CLN nodes or reconcile already-started swaps; never originate swaps."""
+"""Run CLN nodes, recover swaps, and process explicitly authorized reverse quotes."""
 import argparse
 import json
 import os
@@ -55,18 +55,29 @@ def tick(settings):
     except Exception:
         health['error'] = 'operator_rpc_unavailable'
         return health
-    try:
-        receiver = RPC.call(settings['receiver_cli'], 'getinfo')
-        if receiver['network'] != net['xbt'] or receiver['id'] != settings['receiver_id']:
-            raise ValueError('receiver identity mismatch')
+    if settings.get('deployment') == 'operator-pair-v1':
         health['nodes_ready'] = True
-        peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
-        if not any(p['id'] == settings['receiver_id'] and p['connected'] for p in peers):
-            RPC.call(settings['xbt_cli'], 'connect', settings['receiver_id'], '127.0.0.1', 19835)
-        health['xbt_connected'] = True
-    except Exception:
-        # A receiver outage must not block reconciliation by the operators.
-        health['error'] = 'receiver_rpc_or_connection_unavailable'
+        health['customer_wallet_managed'] = False
+        # Peer connectivity is observable from the operator, not from a
+        # customer RPC. Being offline must not block existing swap recovery.
+        try:
+            peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
+            health['xbt_connected'] = any(p['id'] == settings['receiver_id'] and p['connected'] for p in peers)
+        except Exception:
+            health['peer_status_available'] = False
+    else:
+        try:
+            receiver = RPC.call(settings['receiver_cli'], 'getinfo')
+            if receiver['network'] != net['xbt'] or receiver['id'] != settings['receiver_id']:
+                raise ValueError('receiver identity mismatch')
+            health['nodes_ready'] = True
+            peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
+            if not any(p['id'] == settings['receiver_id'] and p['connected'] for p in peers):
+                RPC.call(settings['xbt_cli'], 'connect', settings['receiver_id'], '127.0.0.1', 19835)
+            health['xbt_connected'] = True
+        except Exception:
+            # A receiver outage must not block reconciliation by the operators.
+            health['error'] = 'receiver_rpc_or_connection_unavailable'
     root = Path(settings['swap_root']).resolve()
     quotes = sorted(set(root.glob('*/quote.json')) | set(root.glob('*/swap/quote.json')))
     for quote_path in quotes:
@@ -113,8 +124,8 @@ def tick(settings):
             path = quote_path.parent/'reverse-state.json'
             if path.exists() and not path.resolve().is_relative_to(root):
                 raise ValueError('reverse state outside recovery root')
-            from reverse_service import recover_record
-            result = recover_record(quote_path.parent, settings)
+            from reverse_authorize import process_record
+            result = process_record(quote_path.parent, settings)
             if result.get('phase') not in ('xbt_released', 'xbt_failed'):
                 report.update(result)
                 health['swaps'].append(report)

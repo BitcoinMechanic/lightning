@@ -22,11 +22,14 @@ def record(settings):
             or any(not re.fullmatch('0[23][0-9a-f]{64}', i) for i in [*ids, settings['receiver_id']])
             or settings.get('reverse_profile', PROFILE) != PROFILE):
         raise ValueError('invalid live service identities or profile')
-    return dict(profile=PROFILE, node_ids=ids, payer_id=settings['receiver_id'],
+    value = dict(profile=PROFILE, node_ids=ids, payer_id=settings['receiver_id'],
                 btc_cli=settings['btc_cli'], xbt_cli=settings['xbt_cli'],
-                payer_cli=settings['receiver_cli'], xbt_root=settings['roots']['xbt'],
+                xbt_root=settings['roots']['xbt'],
                 swap_root=settings['swap_root'], btc_sats=1500, max_xbt_sats=500000,
                 max_routing_fee_sats=30, margin_bps=100, max_delay=576)
+    if settings.get('deployment') != 'operator-pair-v1':
+        value['payer_cli'] = settings['receiver_cli']
+    return value
 
 
 def configured(settings):
@@ -70,6 +73,8 @@ def install(settings_path, rpc=RPC.call):
     for key, node, network in (('btc_cli', settings['node_ids'][0], 'bitcoin'),
                                 ('xbt_cli', settings['node_ids'][1], 'xbt'),
                                 ('receiver_cli', settings['receiver_id'], 'xbt')):
+        if key == 'receiver_cli' and settings.get('deployment') == 'operator-pair-v1':
+            continue
         info = rpc(settings[key], 'getinfo')
         if info['id'] != node or info['network'] != network or any(k.startswith('warning_') for k in info):
             raise ValueError('node identity or readiness mismatch')

@@ -69,11 +69,12 @@ def units(settings, directory):
     runtime = Path(__file__).with_name('service_runtime.py').resolve()
     root = settings['repo']
     result = {}
-    for role, name in ROLES.items():
+    roles = {k: v for k, v in ROLES.items() if k != 'receiver' or settings.get('deployment') != 'operator-pair-v1'}
+    for role, name in roles.items():
         argv = [settings['python'], str(runtime), '--directory', str(directory), '--role', role]
         after = ''
         if role == 'recovery':
-            after = 'After=cln-btc-operator.service cln-xbt-operator.service cln-xbt-receiver.service\n'
+            after = 'After=cln-btc-operator.service cln-xbt-operator.service' + (' cln-xbt-receiver.service' if 'receiver' in roles else '') + '\n'
         stop = ''
         if role != 'recovery':
             network = 'bitcoin' if role == 'btc' else 'xbt'
@@ -88,7 +89,7 @@ def units(settings, directory):
             'Restart=on-failure\nRestartSec=10\nRestartPreventExitStatus=78\n'
             'TimeoutStopSec=120\nKillMode=mixed\nNoNewPrivileges=true\n')
     result['cln-swaps.target'] = ('[Unit]\nDescription=Experimental BTC-XBT swap nodes and recovery\n'
-        'Wants='+' '.join(n+'.service' for n in ROLES.values())+'\n\n[Install]\nWantedBy=default.target\n')
+        'Wants='+' '.join(n+'.service' for n in roles.values())+'\n\n[Install]\nWantedBy=default.target\n')
     return result
 
 

@@ -11,10 +11,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 from smoke_regtest import Lab, wait_until
 from reverse_check import check
 from reverse_service import create
+import reverse_customer as customer
+from reverse_quote_api import Quotes, Server
+from reverse_request import request_quote
 from reverse_live import SERVICE_REGTEST, LIVE_EXECUTION_ENABLED
 from swap_controller import save
 
@@ -32,7 +36,7 @@ class ServiceLab(Lab):
         return super().start(args, logfile, new_session)
 
 
-def run(lab, fail_outgoing=False, abort_unspent=False):
+def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False):
     if LIVE_EXECUTION_ENABLED:
         raise RuntimeError('expected live reverse activation to remain disabled')
     private_hint = True
@@ -111,8 +115,8 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
     invoice = lab.rpc([*receiver['cli'], '-k'], 'invoice', 'amount_msat=1500000msat',
                       'label=service-reverse', 'description=Service reverse regtest',
                       'exposeprivatechannels=true', 'cltv=144')
-    settings = dict(reverse_profile=SERVICE_REGTEST, btc_cli=outgoing['cli'],
-                    xbt_cli=incoming['cli'], receiver_cli=payer['cli'],
+    settings = dict(reverse_profile=SERVICE_REGTEST, deployment='operator-pair-v1', btc_cli=outgoing['cli'],
+                    xbt_cli=incoming['cli'],
                     node_ids=[outgoing['id'], incoming['id']], receiver_id=payer['id'],
                     swap_root=str(lab.root))
     settings_path = lab.root/'service-settings.json'
@@ -125,6 +129,11 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
                 computedAt=int(time.time()*1000), bestBid='0.0043066', bestAsk='0.00431'))
         return dict(success=True, pair='BTCB2_BTC', bids=[dict(price='0.0043066', quantity='1')])
 
+    def operator_rpc(cli, *args):
+        if list(cli[:len(payer['cli'])]) == payer['cli']:
+            raise AssertionError('quote creation contacted customer wallet RPC')
+        return lab.rpc(cli, *args)
+
     def inspect(*args, **kwargs):
         return check(*args, **kwargs, market_fetch=market)
 
@@ -132,13 +141,34 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
     # never be retried blindly if registration or signing has a lost reply.
     def ready():
         result = inspect(invoice['bolt11'], dict(btc=outgoing['cli'],
-                         operator=incoming['cli'], payer=payer['cli']), rpc=lab.rpc,
+                         operator=incoming['cli']), rpc=operator_rpc, payer_id=payer['id'],
                          max_routing_fee_sats=30, max_delay=576, _service_regtest=True)
         return result if result.get('route_found') else None
     summary = wait_until(ready, outgoing['proc'], timeout=90)
     if summary['btc_outgoing_cltv'] != 448:
         raise AssertionError('expected 448-block route from private final hint')
-    quote = create(settings, invoice['bolt11'], directory, rpc=lab.rpc, inspector=inspect)
+    def creator(settings, value, destination, inspector):
+        return create(settings, value, destination, rpc=operator_rpc, inspector=inspector)
+    api = Quotes(settings, creator=creator, inspector=inspect, auto_process=auto_process)
+    request_dir = lab.root/'customer-request'
+    credential = dict(token='ab'*32, payer_id=payer['id'])
+    with Server(lab.port(), api, credential) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for _ in range(2):
+                request_quote(invoice['bolt11'], credential, f'http://127.0.0.1:{server.server_port}',
+                              request_dir, 500000)
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+    request_id = json.loads((request_dir/'request.json').read_text())['request_id']
+    directory = lab.root/('api-'+request_id)
+    quote = json.loads((directory/'reverse-quote.json').read_text())
+    print('PASS: repeated customer API request returned the original offer; no payment or duplicate quote', flush=True)
+    if quote['inspection']['payer_rpc_checked'] or quote['inspection']['xbt_payer_spendable_sats'] is not None:
+        raise AssertionError('operator-only quote claimed customer wallet inspection')
+    print('PASS: service quote uses only operator RPCs; customer wallet RPC never accessed', flush=True)
     terms = quote['terms']
     if (terms['timing']['minimum_xbt_remaining_blocks'] != 598
             or terms['timing']['proposed_xbt_invoice_cltv'] != 622
@@ -150,7 +180,17 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
         raise AssertionError('quote creation attempted a BTC payment')
     print('PASS: real service registered and signed XBT quote; 448-block BTC route, 622-block XBT invoice; no BTC spend', flush=True)
     pay_log = lab.root/'service-xbt-pay.log'
-    paying = lab.start([*payer['cli'], 'pay', quote['xbt_invoice']], pay_log)
+    offer_path = request_dir/'offer.json'
+    customer_dir = lab.root/'customer-payment'
+    customer.review(json.loads(offer_path.read_text()), invoice['bolt11'], payer['cli'],
+                    customer_dir, 500000, rpc=lab.rpc, network='xbt-regtest')
+    client = lab.root/'customer-pay.py'
+    client.write_text('import sys,json\nfrom pathlib import Path\n'+
+        f'sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n'+
+        'from reverse_customer import pay\n'+
+        f'print(json.dumps(pay(Path({str(customer_dir)!r}))))\n')
+    paying = lab.start([sys.executable, str(client)], pay_log)
+    print('PASS: customer reviewed minimal offer and submitted using its own wallet only', flush=True)
     payment_hash = terms['payment_hash']
 
     def committed(node, peer, direction):
@@ -169,6 +209,21 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
         if proc.returncode:
             raise AssertionError('service command failed; inspect retained regtest logs: '+proc.stdout)
         return json.loads(proc.stdout)
+
+    def background():
+        worker = lab.root/'recovery-tick.py'
+        worker.write_text('import sys,json\nfrom pathlib import Path\n'+
+            f'sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n'+
+            'from service_runtime import tick\n'+
+            f'print(json.dumps(tick(json.loads(Path({str(settings_path)!r}).read_text()))))\n')
+        result = subprocess.run([sys.executable, str(worker)], capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise AssertionError('background worker failed')
+        health = json.loads(result.stdout)
+        if (not health.get('operators_ready') or not health.get('nodes_ready')
+                or any(s.get('outcome') == 'needs_inspection' for s in health['swaps'])):
+            raise AssertionError('background worker could not process service payment')
+        return health
 
     if service('recover') != {'outcome': 'needs_manual_start'} or state_path.exists():
         raise AssertionError('recovery started an unsubmitted payment')
@@ -192,7 +247,12 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
             raise AssertionError('unspent cancellation not repeatable')
         print('PASS: stale margin blocked service submission; abort-unspent returned original XBT; no BTC attempt', flush=True)
     else:
-        if service('tick').get('outcome') != 'pending':
+        if auto_process:
+            background()
+            if not state_path.exists() or json.loads(state_path.read_text())['phase'] != 'outgoing_started':
+                raise AssertionError('authorized background worker did not start original BTC attempt')
+            print('PASS: authorized quote processed by background worker; no manual service start', flush=True)
+        elif service('tick').get('outcome') != 'pending':
             raise AssertionError('service did not submit original pending attempt')
         wait_until(lambda: committed(outgoing, relay, 'out'), outgoing['proc'])
         wait_until(lambda: committed(receiver, relay, 'in'), receiver['proc'])
@@ -230,21 +290,8 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
             raise AssertionError('receiver hook outcome not triggered')
         terminal = 'failed' if fail_outgoing else 'complete'
         wait_until(lambda: rpc(outgoing, 'listsendpays')['payments'][0]['status'] == terminal, outgoing['proc'])
-        # Exercise the actual background scanner in a fresh process. It reads
-        # exactly the same settings/quote/state and must not initiate payments.
-        worker = lab.root/'recovery-tick.py'
-        worker.write_text('import sys,json\nfrom pathlib import Path\n'+
-            f'sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n'+
-            'from service_runtime import tick\n'+
-            f'print(json.dumps(tick(json.loads(Path({str(settings_path)!r}).read_text()))))\n')
         for _ in range(2):
-            result = subprocess.run([sys.executable, str(worker)], capture_output=True, text=True, timeout=60)
-            if result.returncode:
-                raise AssertionError('background recovery worker failed')
-            health = json.loads(result.stdout)
-            if (not health.get('operators_ready') or not health.get('nodes_ready')
-                    or any(s.get('outcome') == 'needs_inspection' for s in health['swaps'])):
-                raise AssertionError('background recovery could not reconcile service payment')
+            background()
         expected = 'xbt_failed' if fail_outgoing else 'xbt_released'
         if json.loads(state_path.read_text())['phase'] != expected or service('recover').get('phase') != expected:
             raise AssertionError('background recovery did not finish original payment')
@@ -255,8 +302,15 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
 
     failed = fail_outgoing or abort_unspent
     paying.wait(timeout=40)
-    if (paying.returncode == 0) == failed:
-        raise AssertionError('wrong payer outcome')
+    if paying.returncode:
+        raise AssertionError('customer command failed')
+    customer_state = json.loads((customer_dir/'customer.json').read_text())
+    wait_until(lambda: customer.result(customer_state, rpc=lab.rpc)['outcome'] == ('failed' if failed else 'complete'), payer['proc'])
+    receipt = customer.result(customer_state, rpc=lab.rpc)
+    if receipt['outcome'] != ('failed' if failed else 'complete'):
+        raise AssertionError('wrong customer outcome')
+    if customer.pay(customer_dir, rpc=lab.rpc) != receipt:
+        raise AssertionError('repeated customer pay did not reconcile the original outcome')
     deltas = {key: 0 for key in initial}
     if not failed:
         for left, right, amount in ((payer, incoming, terms['xbt_amount_msat']),
@@ -264,8 +318,7 @@ def run(lab, fail_outgoing=False, abort_unspent=False):
             scid = channel(left, right)['short_channel_id']
             deltas[(left['id'], scid)] -= amount
             deltas[(right['id'], scid)] += amount
-        receipt = json.loads(pay_log.read_text())
-        if receipt['status'] != 'complete' or receipt['amount_sent_msat'] != terms['xbt_amount_msat']:
+        if receipt['xbt_sent_sats']*1000 != terms['xbt_amount_msat'] or not receipt['matching_preimage_verified']:
             raise AssertionError('payer receipt differs from service quote')
     for node in nodes:
         def settled():
@@ -291,8 +344,11 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--fail-outgoing', action='store_true')
     modes.add_argument('--abort-unspent', action='store_true')
+    parser.add_argument('--auto-process', action='store_true')
     parser.add_argument('--work-dir', type=Path)
     args = parser.parse_args()
+    if args.auto_process and args.abort_unspent:
+        parser.error('auto-process cancellation is covered by authorization unit tests')
     temp = None
     if args.work_dir:
         root = args.work_dir.resolve()
@@ -303,7 +359,7 @@ def main():
     lab = ServiceLab(root, str(args.bitcoind.resolve()), str(args.bitcoin_cli.resolve()))
     print(f'Test directory: {root}', flush=True)
     try:
-        run(lab, args.fail_outgoing, args.abort_unspent)
+        run(lab, args.fail_outgoing, args.abort_unspent, args.auto_process)
     finally:
         lab.close()
         if temp:

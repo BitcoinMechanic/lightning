@@ -57,17 +57,16 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
     if directory.resolve().parent != Path(settings['swap_root']).resolve():
         raise ValueError('reverse swap must be an immediate child of the monitored swap root')
     config = binding(settings)
-    clis = dict(btc=config['btc_cli'], operator=config['xbt_cli'], payer=settings['receiver_cli'])
+    clis = dict(btc=config['btc_cli'], operator=config['xbt_cli'])
     summary = inspector(invoice, clis, rpc=rpc, max_routing_fee_sats=30,
                         margin_bps=100, max_xbt_sats=500000, max_delay=576,
-                        _service_regtest=profile == SERVICE_REGTEST)
+                        _service_regtest=profile == SERVICE_REGTEST, payer_id=config['payer_id'])
     unknown_reason = 'remote HTLC limits unavailable for one or more planned hops'
     if (not summary.get('route_found') or summary['btc_sats'] != 1500
             or any(reason != unknown_reason for reason in summary.get('reasons', []))):
         raise ValueError('reverse pilot inspection did not pass')
     for role, node, network in (('btc', config['node_ids'][1], net['btc']),
-                                ('operator', config['node_ids'][0], net['xbt']),
-                                ('payer', config['payer_id'], net['xbt'])):
+                                ('operator', config['node_ids'][0], net['xbt'])):
         info = rpc(clis[role], 'getinfo')
         if info['id'] != node or info['network'] != network:
             raise ValueError('service node identity mismatch')
@@ -137,9 +136,13 @@ def register_and_sign(directory, quote, rpc):
     save(directory/'reverse-quote.json', quote)
 
 
-def step(directory, *, recover_only=False, rpc=RPC.call, controller=reconcile):
+def step(directory, *, recover_only=False, rpc=RPC.call, controller=reconcile, authorized_digest=None):
     with locked(directory):
         quote = private_load(directory/'reverse-quote.json')
+        if authorized_digest is not None:
+            from reverse_authorize import digest
+            if digest(quote) != authorized_digest:
+                raise ValueError('authorized quote changed before processing')
         terms, config = quote['terms'], quote['config']
         enabled(terms['profile'])
         net = networks(terms['profile'])
@@ -223,22 +226,27 @@ def main():
     create_parser.add_argument('--settings', type=Path, default=Path.home()/'.config/cln-swaps/settings.json')
     create_parser.add_argument('--invoice-file', type=Path, required=True)
     create_parser.add_argument('--directory', type=Path, required=True)
-    for command in ('run', 'status', 'abort-unspent', 'tick', 'recover'):
+    for command in ('run', 'status', 'abort-unspent', 'tick', 'recover', 'offer'):
         child = sub.add_parser(command)
         child.add_argument('--directory', type=Path, required=True)
+        if command == 'offer':
+            child.add_argument('--output', type=Path, required=True)
         child.add_argument('--settings', type=Path, default=Path.home()/'.config/cln-swaps/settings.json')
     args = parser.parse_args()
     os.umask(0o077)
     try:
         directory = args.directory.expanduser().resolve()
         with ExitStack() as contexts:
-            if args.command not in ('quote', 'status'):
+            if args.command not in ('quote', 'status', 'offer'):
                 stored = private_load(directory/'reverse-quote.json')
                 if stored['terms']['profile'] == PROFILE:
                     from reverse_activation import activation, directory_settings
                     settings = directory_settings(directory, args.settings.expanduser())
                     contexts.enter_context(activation(settings))
-            if args.command == 'quote':
+            if args.command == 'offer':
+                from reverse_customer import export
+                print(json.dumps(export(directory, args.output.expanduser().resolve())))
+            elif args.command == 'quote':
                 quote = create(private_load(args.settings.expanduser()), private_invoice(args.invoice_file.expanduser()), directory)
                 print(json.dumps({'xbt_invoice': quote['xbt_invoice'],
                     'btc_sats': quote['terms']['btc_amount_msat']//1000,

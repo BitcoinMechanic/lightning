@@ -635,3 +635,269 @@ unpaid BTC invoice before creating a new quote. Quote expiry, stale prices,
 insufficient route capacity or timing margin remain reasons to refuse payment.
 Keep invoice files and quote output private. Never reuse a directory or discard
 state after an uncertain payment outcome.
+
+### Operator-only reverse quotes
+
+Patch 0077 removes customer-wallet RPC access from service quote creation. The
+service uses the already-bound payer node ID and reads its own XBT channel's
+`receivable_msat`. Only BTC/XBT operator RPCs are used for inspection, route
+planning, registration and signing. Existing admission, quote/channel binding,
+fee, timing and recovery checks remain in force.
+
+The read-only inspector supports the same boundary:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_check.py \
+  --operator-only \
+  --invoice-file "$HOME/cln-live-pilot/unpaid-btc-invoice.txt" \
+  --max-routing-fee-sats 30 --margin-bps 100 \
+  --max-xbt-sats 500000 --max-delay 576
+```
+
+This is inspection only: a previously paid invoice must not be used for a new
+payment. The example path is illustrative; use a fresh unpaid invoice when
+creating a new quote. `--operator-only` reads the operator RPC arrays and bound
+payer ID from the private service settings, optionally selected by `--settings`.
+It reports `payer_rpc_checked: false` and `xbt_payer_spendable_sats: null`, rather
+than pretending to know the remote wallet's spendable balance. The operator's
+receivable capacity is an upper bound, not a promise that the customer can pay.
+The original two-wallet diagnostic mode remains available without this flag.
+
+This separates the quote/payment boundary, not the entire deployment yet. The
+existing tower settings still name the test customer, and the optional receiver
+service and recovery health check still monitor it. There is no public quote API,
+arbitrary-payer admission, routed XBT ingress or multi-customer service in this
+patch. Independent-customer configuration and packaging remain separate work.
+
+The disposable-node service test rejects any quote-time RPC to the payer wallet
+and checks that the generated quote explicitly reports that wallet as unobserved.
+The harness itself still controls the disposable customer to fund and pay the test.
+
+### Independent customer wallet deployment
+
+Patch 0078 separates the tower's existing customer wallet from the exchange
+operator target. It keeps wallet paths, node identities, channels and swap records
+unchanged. It does not create, fund, pay or close anything.
+
+```sh
+.venv/bin/python tools/blake2b/test_separate_customer.py -v
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli
+.venv/bin/python tools/blake2b/separate_customer.py
+systemctl --user daemon-reload
+systemctl --user enable cln-xbt-receiver.service
+systemctl --user restart cln-swap-recovery.service
+```
+
+The migration validates existing generated units before writing, saves private
+`settings.before-customer-separation.json`, and creates a separate private
+`customer-wallet` configuration directory beside the operator settings. That
+configuration contains only the customer launch paths and its required XBT
+backend credentials. No wallet data is moved. Re-running the migration after an
+interruption accepts only the expected original or completed configuration.
+Unrelated modifications are refused rather than overwritten.
+
+The operator settings use `deployment: operator-pair-v1`. They retain the known
+customer node ID for quote/channel binding but contain no customer RPC command
+or wallet data directory. Existing activation is rebound to the operator-only
+configuration with the same limits and operator/customer identities. Saved swap
+bindings stay identical, so historical recovery remains available.
+
+`cln-swaps.target` now wants only `cln-btc-operator`, `cln-xbt-operator` and
+`cln-swap-recovery`. The independent `cln-xbt-receiver` service has its own
+`default.target` enablement and no `PartOf=cln-swaps.target`; stopping/restarting
+the operator target no longer stops/restarts that customer wallet. Its new
+configuration is used on its next start. No node restart is needed for migration.
+Enable the independent customer unit so it still starts at user-manager startup.
+
+Operator recovery reads only its own node RPCs. `nodes_ready` now refers to the
+two operator nodes, `customer_wallet_managed` is false, and `xbt_connected` reports
+whether the known customer appears connected in the operator's peer list. An
+offline customer does not prevent existing swap reconciliation. The worker no
+longer uses the customer's RPC or automatically reconnects it to localhost.
+Ordinary node/channel reconnection remains CLN's responsibility.
+
+This is deployment separation for the existing bounded single-customer pilot.
+It does not add a public API, anonymous payer selection or concurrent customers.
+
+### Customer review, pay and status
+
+Patch 0079 adds a file-based customer interface. The customer needs their original
+unpaid BTC invoice, a minimal offer from the operator, and access to their own
+XBT CLN wallet. They do not receive operator RPC commands, internal routes or
+controller state. This is a local/private file handoff, not a public HTTP API.
+The existing bounded pilot still requires a direct XBT channel to the operator.
+
+After creating a fresh operator quote, export its customer offer:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_service.py offer \
+  --directory /path/to/operator-swap --output /path/to/customer-offer.json
+```
+
+Give the customer that private offer file. Do not give them `reverse-quote.json`.
+The operator runs the existing `reverse_service.py run --directory ...` command
+for the authorized swap; recovery alone still cannot originate a new BTC payment.
+
+On the customer side, review using the customer's own copy of the BTC invoice:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_customer.py review \
+  --offer-file /path/to/customer-offer.json \
+  --btc-invoice-file /path/to/unpaid-btc-invoice.txt \
+  --lightning-dir "$HOME/cln-xbt-peer" \
+  --directory /path/to/new-customer-payment \
+  --max-xbt-sats 400000 --max-delay 2016
+```
+
+The review checks both signed invoices, currencies, exact amounts, matching
+payment hashes, expiry, customer-approved XBT and locktime caps, and the customer's
+ready direct channel to the XBT invoice payee. It records the reviewed offer
+privately and prints only amounts, locktime and expiry. It never submits payment.
+The operator's minimal offer contains an SHA256 fingerprint of the exact original
+BTC invoice, the signed XBT invoice, amounts and expiry. Customer and operator
+state directories are distinct and must never be substituted for each other.
+
+After reviewing the amounts, the customer explicitly submits once:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_customer.py pay \
+  --directory /path/to/new-customer-payment
+.venv/bin/python tools/blake2b/reverse_customer.py status \
+  --directory /path/to/new-customer-payment
+```
+
+Submission is locked and checkpointed before the customer wallet's `pay` RPC,
+with zero XBT routing fee allowance for the direct channel and retries disabled.
+A second invocation reads the original payment status rather than calling `pay`
+again, including after failure, timeout or a missing payment record. An unknown
+outcome requires inspection; it never authorizes another submission. Status is
+read-only. Successful status verifies the preimage, payment hash and exact sent
+amount without printing the proof, invoices or node identities. Keep the customer
+state directory after completion and do not reuse paid BTC invoices.
+
+The disposable service rehearsal now exports an offer, reviews and pays through
+the customer tool, restarts operators, reconciles through background recovery,
+and checks customer proof plus all six channel-side balances. Success, rejection
+and unspent-cancellation modes cover this interface. No live transfer is required
+to test it.
+
+### Authenticated loopback quote API
+
+Patch 0080 adds `reverse_quote_api.py` and `reverse_request.py`. This first API
+listens only on `127.0.0.1`, uses a private bearer credential bound to the existing
+customer identity, and exposes only `POST /v1/quote`. It cannot start a controller,
+pay, refund, close a channel, change limits or administer nodes. It is not a public
+exchange server. Do not expose it through a port forward or reverse proxy yet.
+
+Initialize the credential without printing it, then run the foreground listener:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_quote_api.py init \
+  --token-file "$HOME/.config/cln-swaps/customer-api.json"
+.venv/bin/python tools/blake2b/reverse_quote_api.py serve \
+  --token-file "$HOME/.config/cln-swaps/customer-api.json"
+```
+
+The customer requests a quote with a fresh unpaid 1,500-sat BTC invoice:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_request.py \
+  --invoice-file /path/to/unpaid-btc-invoice.txt \
+  --token-file /path/to/customer-api.json \
+  --directory /path/to/new-customer-request \
+  --max-xbt-sats 400000
+```
+
+The requester saves `offer.json` privately in that directory and prints only
+amounts, expiry and the fact that customer review is required. Continue with
+`reverse_customer.py review`, using that offer and the customer's original BTC
+invoice, and then explicitly `pay` if accepted. Customer review verifies signed
+invoice contents; receiving an API response is not itself payment approval.
+The operator still explicitly runs the authorized swap controller. Existing
+recovery never originates a new outgoing payment.
+
+Each request carries a random ID persisted before transmission. The operator
+journals that ID, request contents and operator/customer binding before quote
+creation. Identical retries return the same published offer, even after a lost
+reply; changed contents or identities are refused. If creation stopped before a
+signed quote was published, retries require operator inspection rather than
+creating another quote. Expired offers are not automatically renewed. Never delete
+request records merely to retry an ambiguous operation.
+
+The server rejects missing/wrong credentials before parsing bodies, browser
+Origin headers, unexpected Host values, transfer encoding, non-JSON requests and
+oversized bodies. It emits no access logs or raw exception text. The client uses
+no environment proxy, refuses redirects and sends credentials only to an explicit
+loopback HTTP endpoint. Credential files must remain private (0600). Remote TLS
+transport, credential lifecycle, multi-customer limits and unattended serving are
+not included in this patch.
+
+Tests use real localhost HTTP for authentication and request replay. The
+node-backed service rehearsal now requests the quote twice over HTTP, then uses
+the resulting offer in the customer review/pay/status flow; no duplicate quote
+or payment is permitted. The listener is stopped after quote acquisition, showing
+that payment recovery does not depend on the quote HTTP connection remaining up.
+
+### Authorized automatic processing
+
+Patch 0081 lets the background worker originate the bounded BTC payment only when
+an operator authorization exists for that exact signed quote. Without one, behavior
+is unchanged: recovery alone cannot start a prepared payment. The authorization
+contains a SHA256 digest of the entire private quote and its expiry. Directory,
+operator/customer identities, quote profile and all existing limits remain bound.
+The quote digest is checked again inside the service lock before processing.
+
+An operator can authorize one existing signed quote explicitly:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_authorize.py \
+  --directory /path/to/operator-swap
+```
+
+Authorization records permission; it does not itself call a payment RPC. The
+worker waits for the original gate to hold the matching XBT HTLC. Existing
+pre-spend checks then revalidate identity, amount, invoice, liquidity, fees,
+reserves and timing before the original BTC submission. The outgoing checkpoint
+is still saved before sendpay, and pending or uncertain attempts are never resent.
+
+Alternatively, the operator can authorize new quotes issued by one API listener:
+
+```sh
+.venv/bin/python tools/blake2b/reverse_quote_api.py serve \
+  --token-file "$HOME/.config/cln-swaps/customer-api.json" --auto-process
+```
+
+The flag is off by default. Its value is pinned in each new request journal before
+quote creation, and authorization is persisted before the offer is returned.
+Restarting a listener with the flag does not upgrade older quote-only requests.
+Conversely, restarting without it does not revoke authorization already recorded
+for issued quotes. Interrupted requests may finish recording their original
+approval, but cannot create another quote automatically. The customer API exposes
+no endpoint to grant or broaden authorization.
+
+Expired or changed approval blocks new automatic spending. It does not block
+recovery of an attempt already submitted, because that recovery may be required
+to settle or refund the original HTLC. A prepared swap refused by preflight may
+still need operator inspection and `abort-unspent`; expiry alone is never treated
+as proof that a submitted payment failed. Preserve all quote/controller records.
+
+After this patch is validated, restarting only `cln-swap-recovery` loads the new
+worker behavior. Existing unapproved quotes remain recovery-only. The HTTP API
+continues to bind localhost only. This is still the fixed 1,500-sat BTC pilot for
+one known customer, not a general unattended public exchange.
+
+Disposable-node automatic-processing tests:
+
+```sh
+.venv/bin/python tools/blake2b/test_reverse_authorize.py -v
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --auto-process
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --auto-process --fail-outgoing
+```
+
+They authorize through the HTTP quote path and let a fresh background worker
+start the original BTC attempt. No manual service start is used. Operator restart,
+recovery, success/rejection, customer payment proof and all channel balances remain
+checked. Both modes are included in the regression catalog.

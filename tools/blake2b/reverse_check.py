@@ -83,7 +83,7 @@ def private_invoice(path):
 @diagnostic('inspection')
 def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
           now=time.time, monotonic=time.monotonic, max_routing_fee_sats=10,
-          margin_bps=100, max_xbt_sats=500000, max_delay=288, _service_regtest=False):
+          margin_bps=100, max_xbt_sats=500000, max_delay=288, _service_regtest=False, payer_id=None):
     if (type(max_routing_fee_sats) is not int or not 0 <= max_routing_fee_sats <= 100
             or type(margin_bps) is not int or not 0 <= margin_bps <= 500
             or type(max_xbt_sats) is not int or not 0 < max_xbt_sats <= 500000):
@@ -98,9 +98,14 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
         with diagnostic('rpc.'+role+'.'+method):
             return rpc([*clis[role], *(['-k'] if named else [])], method, *args)
 
+    if payer_id is not None and (not isinstance(payer_id, str) or not re.fullmatch('0[23][0-9a-f]{64}', payer_id)):
+        raise CheckError('payer identity must be a compressed public key')
     infos = {}
     networks = ('regtest', 'xbt-regtest') if _service_regtest else ('bitcoin', 'xbt')
     for role, network in (('btc', networks[0]), ('operator', networks[1]), ('payer', networks[1])):
+        if role == 'payer' and payer_id is not None:
+            infos[role] = {'id': payer_id}
+            continue
         info = read(role, 'getinfo')
         if info.get('network') != network or any(k.startswith('warning_') for k in info):
             raise CheckError('node network mismatch or node reports a warning')
@@ -139,17 +144,24 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
     with diagnostic('xbt_channels_and_reserves'):
         pair = {}
         for role, peer in (('payer', 'operator'), ('operator', 'payer')):
+            if role == 'payer' and payer_id is not None:
+                continue
             matches = [c for c in read(role, 'listpeerchannels')['channels']
                        if c.get('peer_id') == infos[peer]['id'] and c.get('state') == 'CHANNELD_NORMAL']
             if len(matches) != 1 or not normal(matches[0]):
                 raise CheckError('need one connected normal XBT channel without pending HTLCs at both ends')
             pair[role] = matches[0]
-        for key in ('channel_id', 'funding_txid', 'funding_outnum'):
-            if key not in pair['payer'] or pair['payer'][key] != pair['operator'].get(key):
-                raise CheckError('XBT endpoints disagree on channel funding identity')
-        spendable, receivable = pair['payer']['spendable_msat'], pair['operator']['receivable_msat']
-        if any(type(v) is not int or v < 0 for v in (spendable, receivable)):
-            raise CheckError('invalid XBT channel balance')
+        spendable = None
+        if payer_id is None:
+            for key in ('channel_id', 'funding_txid', 'funding_outnum'):
+                if key not in pair['payer'] or pair['payer'][key] != pair['operator'].get(key):
+                    raise CheckError('XBT endpoints disagree on channel funding identity')
+            spendable = pair['payer']['spendable_msat']
+            if type(spendable) is not int or spendable < 0:
+                raise CheckError('invalid XBT payer balance')
+        receivable = pair['operator']['receivable_msat']
+        if type(receivable) is not int or receivable < 0:
+            raise CheckError('invalid XBT operator balance')
         xbt_min = max(minimum_sats(c) for c in pair.values())
         reserves = {}
         for role in ('btc', 'operator'):
@@ -170,7 +182,8 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
                   payment_metadata_present=metadata is not None,
                   btc_sats=amount//1000, estimated_xbt_sats=audit['xbt_sats'],
                   max_routing_fee_sats=max_routing_fee_sats, margin_bps=margin_bps,
-                  max_xbt_sats=max_xbt_sats, xbt_payer_spendable_sats=spendable//1000,
+                  max_xbt_sats=max_xbt_sats, xbt_payer_spendable_sats=None if spendable is None else spendable//1000,
+                  payer_rpc_checked=payer_id is None,
                   xbt_operator_receivable_sats=receivable//1000, xbt_minimum_sats=xbt_min,
                   operator_reserves_met=all(reserves.values()),
                   ticker_computed_at_ms=audit['ticker_computed_at_ms'],
@@ -220,7 +233,7 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
         reasons.append('operator confirmed unreserved reserve below 50000 sats')
     if audit['xbt_sats'] > max_xbt_sats:
         reasons.append('estimated XBT exceeds inspection cap')
-    if audit['xbt_sats']*1000 > min(spendable, receivable):
+    if audit['xbt_sats']*1000 > (receivable if spendable is None else min(spendable, receivable)):
         reasons.append('insufficient XBT payer-to-operator liquidity')
     if audit['xbt_sats'] < xbt_min:
         reasons.append('XBT amount below conservative untrimmed minimum')
@@ -247,6 +260,8 @@ def main():
                         help='read-only route delay cap in blocks (1..2016; default 288)')
     parser.add_argument('--margin-bps', type=int, default=100)
     parser.add_argument('--max-xbt-sats', type=int, default=500000)
+    parser.add_argument('--operator-only', action='store_true', help='Use the bound payer identity in service settings without contacting its wallet.')
+    parser.add_argument('--settings', type=Path, default=Path.home()/'.config/cln-swaps/settings.json')
     args = parser.parse_args()
     binary = str(Path(__file__).resolve().parents[2]/'cli/lightning-cli')
     clis = {role: [binary, '--lightning-dir='+str(directory.expanduser().resolve()),
@@ -255,10 +270,16 @@ def main():
                                              ('operator', args.xbt_operator_dir, 'xbt'),
                                              ('payer', args.xbt_payer_dir, 'xbt'))}
     try:
+        payer_id = None
+        if args.operator_only:
+            from service_manager import private_load
+            settings = private_load(args.settings.expanduser())
+            payer_id = settings['receiver_id']
+            clis = dict(btc=settings['btc_cli'], operator=settings['xbt_cli'])
         print(json.dumps(check(private_invoice(args.invoice_file.expanduser()), clis,
                                max_routing_fee_sats=args.max_routing_fee_sats,
                                margin_bps=args.margin_bps, max_xbt_sats=args.max_xbt_sats,
-                               max_delay=args.max_delay)))
+                               max_delay=args.max_delay, payer_id=payer_id)))
         return 0
     except DiagnosticError as error:
         print(json.dumps(dict(event='inspection_failed', reason=str(error), **error.details)))
