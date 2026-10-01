@@ -7,6 +7,8 @@ from pathlib import Path
 import secrets
 import time
 import urllib.request
+import urllib.error
+from quote_refusal import QuoteRefused, REASONS
 from urllib.parse import urlsplit
 
 from service_manager import private_load
@@ -24,14 +26,30 @@ def transport(url, token, body):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     request = urllib.request.Request(url+'/v1/quote', data=json.dumps(body).encode(),
         headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'})
-    with opener.open(request, timeout=90) as response:
-        raw = response.read(65537)
+    try:
+        with opener.open(request, timeout=90) as response:
+            raw = response.read(65537)
+    except urllib.error.HTTPError as error:
+        if error.code == 409:
+            raw = error.read(4097)
+            try:
+                value = json.loads(raw) if len(raw) <= 4096 else None
+            except (ValueError, UnicodeError):
+                value = None
+            if (isinstance(value, dict) and set(value) == {'error', 'reason', 'quote_created', 'payment_started'}
+                    and value['error'] == 'quote_refused' and isinstance(value['reason'], str)
+                    and value['reason'] in REASONS and value['quote_created'] is False
+                    and value['payment_started'] is False):
+                raise QuoteRefused(value['reason']) from None
+        raise ValueError('quote request outcome unavailable') from None
     if len(raw) > 65536:
         raise ValueError('quote response too large')
     return json.loads(raw)
 
 
-def request_quote(invoice, credentials, url, directory, max_xbt_sats, send=transport):
+def request_quote(invoice, credentials, url, directory, max_xbt_sats, send=transport, retry_refused=False):
+    if type(retry_refused) is not bool:
+        raise ValueError('invalid retry flag')
     endpoint = urlsplit(url)
     if (endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1'
             or endpoint.username is not None or endpoint.password is not None
@@ -59,6 +77,8 @@ def request_quote(invoice, credentials, url, directory, max_xbt_sats, send=trans
             stored = dict(expected, request_id=secrets.token_hex(16))
             save(path, stored)
         body = {k: stored[k] for k in ('request_id', 'btc_invoice', 'max_xbt_sats')}
+        if retry_refused:
+            body['retry_refused'] = True
         offer = send(url, token, body)
         if (not isinstance(offer, dict) or set(offer) != FIELDS or offer['format'] != FORMAT
                 or offer['btc_invoice_sha256'] != hashlib.sha256(invoice.encode()).hexdigest()

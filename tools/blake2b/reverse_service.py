@@ -18,6 +18,7 @@ from swap_rpc import RPC
 from swap_controller import save
 from reverse_controller import run as reconcile
 from reverse_check import check, private_invoice
+from quote_refusal import QuoteRefused
 from reverse_route import plan
 from reverse_policy import inspect_remote_policies
 from reverse_metadata import invoice_metadata
@@ -61,6 +62,17 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
     summary = inspector(invoice, clis, rpc=rpc, max_routing_fee_sats=30,
                         margin_bps=100, max_xbt_sats=500000, max_delay=576,
                         _service_regtest=profile == SERVICE_REGTEST, payer_id=config['payer_id'])
+    refusal_reasons = {
+        'insufficient XBT payer-to-operator liquidity': 'insufficient_xbt_liquidity',
+        'insufficient BTC first-hop liquidity including routing fee': 'insufficient_btc_liquidity',
+        'operator confirmed unreserved reserve below 50000 sats': 'operator_reserve',
+        'estimated XBT exceeds inspection cap': 'price_cap',
+    }
+    for reason in summary.get('reasons', []):
+        if reason in refusal_reasons:
+            raise QuoteRefused(refusal_reasons[reason])
+    if not summary.get('route_found'):
+        raise QuoteRefused('no_route')
     unknown_reason = 'remote HTLC limits unavailable for one or more planned hops'
     if (not summary.get('route_found') or summary['btc_sats'] != 1500
             or any(reason != unknown_reason for reason in summary.get('reasons', []))):

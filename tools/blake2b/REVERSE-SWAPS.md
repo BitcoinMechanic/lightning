@@ -901,3 +901,96 @@ They authorize through the HTTP quote path and let a fresh background worker
 start the original BTC attempt. No manual service start is used. Operator restart,
 recovery, success/rejection, customer payment proof and all channel balances remain
 checked. Both modes are included in the regression catalog.
+
+
+### Persistent localhost quote API
+
+Run the installer using the project venv after customer separation. It uses the
+configured Python and existing private operator settings, creates or validates
+`~/.config/cln-swaps/customer-api.json`, and writes `cln-swap-quotes.service`.
+The token value is never placed in the unit or printed. No services or payments
+are started by installation. Repeating identical installation is safe; a changed
+unit or mode is refused for local inspection.
+
+```sh
+.venv/bin/python tools/blake2b/quote_api_service.py --auto-process
+systemctl --user daemon-reload
+systemctl --user restart cln-swap-recovery.service
+systemctl --user enable --now cln-swap-quotes.service
+systemctl --user is-active cln-swap-quotes.service cln-swap-recovery.service
+```
+
+Omit `--auto-process` for quote-only operation. With it, new quotes carry the
+per-quote authorization from patch 0081. Existing quotes are not retroactively
+authorized. Already authorized or started swaps retain their recovery obligations
+if the listener stops. Stop new requests with `systemctl --user stop
+cln-swap-quotes.service`; keep the recovery worker running.
+
+The listener remains bound to 127.0.0.1:19840 (optional `--port`). It is enabled
+under the existing cln-swaps target and does not manage the customer wallet.
+This remains the bounded single-customer pilot, not a public exchange service.
+An active process only confirms that the listener is running; quote eligibility,
+routes, liquidity and live activation are checked when requests arrive.
+
+
+### One-command customer payment
+
+`customer_swap.py` combines quote request, local wallet review and explicit
+confirmation. Use a fresh unpaid 1,500-sat BTC invoice saved in a private file,
+an available customer XBT balance, and the running localhost API. For example:
+
+```sh
+.venv/bin/python tools/blake2b/customer_swap.py \
+  --invoice-file "$HOME/cln-live-pilot/fresh-btc-invoice.txt" \
+  --lightning-dir "$HOME/cln-xbt-peer" \
+  --directory "$HOME/cln-live-pilot/customer-payment-1" \
+  --max-xbt-sats 400000
+```
+
+The default token file is `~/.config/cln-swaps/customer-api.json`. This credential
+allows requesting quotes only; the command never reads operator settings or uses
+operator RPC. The customer uses its own CLN RPC to verify both invoices and pay.
+Enter exactly `PAY` to accept the displayed XBT amount. Any other answer leaves
+the payment unsubmitted. There is no automatic acceptance flag.
+
+Repeat the same command and directory after interruption. Before submission it
+reuses the recorded offer and asks again after fresh validation; after submission
+it only queries the wallet. Pending or unknown outcomes must be inspected using
+the same directory, never by making a new attempt directory. This wrapper does
+not poll indefinitely: repeat it to check a pending payment. Expired unsubmitted
+offers fail validation and do not cause a replacement quote or payment.
+
+The existing fixed 1,500-sat pilot and 500,000-XBT-sat maximum remain in force.
+The default incoming locktime cap remains 2,016 XBT blocks. The live API must have
+automatic processing enabled for the unattended operator workflow.
+
+
+### Clear refusals and explicit quote retries
+
+The API records selected definite read-only preflight refusals as `refused`:
+insufficient incoming XBT liquidity, insufficient outgoing BTC liquidity,
+price above the cap, insufficient operator reserves, or no route within limits.
+The customer receives a fixed public reason code and message, without raw RPC
+errors or invoice details. No quote is registered or payment authorized by these
+refusals. Unexpected failures still require inspection.
+
+After correcting a definite refusal, rerun the same `customer_swap.py` command
+with `--retry-quote`. This retries the same request ID only if its operator journal
+records `refused` and no quote directory exists. Each new attempt first records
+`creating`; a crash or uncertain response cannot silently permit another attempt.
+A published offer is returned unchanged, and existing customer payment intents
+still use the original single-submission guards. The operator's original
+per-request automatic-processing choice is retained across retries.
+
+Old requests left in `creating` (including the earlier liquidity failure) cannot
+be upgraded to definite refusals based only on missing files. Do not delete them
+or use `--retry-quote` to bypass inspection. Completed customer directories remain
+status-only, even if the retry flag is supplied.
+
+Restart the quote listener after applying this patch:
+
+```sh
+systemctl --user restart cln-swap-quotes.service
+```
+
+This does not restart either Lightning node or the recovery worker.

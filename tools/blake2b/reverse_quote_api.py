@@ -12,6 +12,7 @@ import secrets
 from service_manager import private_load
 from swap_controller import save
 from reverse_service import create
+from quote_refusal import QuoteRefused
 from reverse_customer import packet
 
 MAX_BODY = 40000
@@ -50,7 +51,13 @@ class Quotes:
             raise ValueError('request directory must be private')
 
     def quote(self, request):
-        if (not isinstance(request, dict) or set(request) != {'request_id', 'btc_invoice', 'max_xbt_sats'}
+        if not isinstance(request, dict):
+            raise ValueError('invalid quote request')
+        request = dict(request)
+        retry_refused = request.pop('retry_refused', False)
+        if type(retry_refused) is not bool:
+            raise ValueError('invalid retry flag')
+        if (set(request) != {'request_id', 'btc_invoice', 'max_xbt_sats'}
                 or not isinstance(request['request_id'], str)
                 or not re.fullmatch('[0-9a-f]{32}', request['request_id'])
                 or not isinstance(request['btc_invoice'], str)
@@ -62,11 +69,11 @@ class Quotes:
         fd = os.open(self.records/'requests.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self._quote(request)
+            return self._quote(request, retry_refused)
         finally:
             os.close(fd)
 
-    def _quote(self, request):
+    def _quote(self, request, retry_refused=False):
         from reverse_service import binding
         config = binding(self.settings)
         key = request['request_id']
@@ -78,6 +85,12 @@ class Quotes:
                 raise ValueError('request ID reused with different contents')
             if 'offer' in stored:
                 return stored['offer']
+            if stored.get('phase') == 'refused':
+                if directory.exists():
+                    raise ValueError('refusal conflicts with quote directory')
+                if not retry_refused:
+                    raise QuoteRefused(stored['refusal_reason'])
+                return self._create_request(stored, record, directory)
             # After a lost reply, only recover an already published quote.
             path = directory/'reverse-quote.json'
             if not path.exists():
@@ -88,12 +101,31 @@ class Quotes:
                 raise ValueError('existing quote directory has no request journal')
             stored = dict(request=request, config=config, phase='creating', auto_process=self.auto_process)
             save(record, stored)  # A retry never creates a second quote.
-            def inspector(*args, **kwargs):
-                result = self.inspector(*args, **kwargs)
-                if result['estimated_xbt_sats'] > request['max_xbt_sats']:
-                    raise ValueError('quote exceeds customer price cap')
-                return result
+            return self._create_request(stored, record, directory)
+        return self._publish(stored, record, directory, quote)
+
+    def _create_request(self, stored, record, directory):
+        request = stored['request']
+        stored.update(phase='creating', attempts=stored.get('attempts', 0)+1)
+        save(record, stored)  # Lost replies remain uncertain until a definite outcome.
+        def inspector(*args, **kwargs):
+            result = self.inspector(*args, **kwargs)
+            if result['estimated_xbt_sats'] > request['max_xbt_sats']:
+                raise QuoteRefused('price_cap')
+            return result
+        try:
             quote = self.creator(self.settings, request['btc_invoice'], directory, inspector=inspector)
+        except QuoteRefused as error:
+            if directory.exists():
+                raise ValueError('quote creation outcome uncertain') from None
+            stored.update(phase='refused', refusal_reason=error.reason)
+            save(record, stored)
+            raise
+        return self._publish(stored, record, directory, quote)
+
+    def _publish(self, stored, record, directory, quote):
+        from reverse_service import binding
+        request = stored['request']
         if (quote['config'] != binding(self.settings)
                 or quote['terms']['btc_invoice'] != request['btc_invoice']):
             raise ValueError('saved quote differs from request or operator')
@@ -172,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             offer = self.server.quotes.quote(request)
+        except QuoteRefused as error:
+            self.reply(409, error.public())
+            return
         except Exception:
             self.reply(409, {'error': 'quote_unavailable', 'payment_started': False})
             return
