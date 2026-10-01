@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """XBT -> BTC direct Lightning swap fixture. Disposable regtest coins only.
 
-Uses a nondurable holding hook, not a live reverse controller. There is no
-restart recovery, routed payment, oracle price or live entry point here.
+Basic modes use a nondurable holding hook. New gate modes test durable quote
+replay across orderly operator restarts and XBT resolution recovery. No routed
+payment, oracle price or live entry point is provided here.
 The fixed 200k XBT / 100k BTC sat amounts have no market significance.
 """
 import argparse
@@ -13,22 +14,31 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 
 from smoke_regtest import Lab, wait_until
 from swap_invoice import unsigned_invoice
 
 
-def run(lab, fail_outgoing=False):
+def run(lab, fail_outgoing=False, recovery=None):
+    fail_outgoing = fail_outgoing or recovery in ('pending-failure', 'gate-restart-failure', 'gate-failure')
+    durable = recovery is not None and recovery.startswith('gate-')
     btc = lab.node('knots-btc', False)
     xbt = lab.node('knots-xbt', True)
     plugin = lab.root/'hold_htlc.py'
     plugin.write_text(f'#!{sys.executable}\n' + Path(__file__).with_name('hold_htlc.py').read_text())
     plugin.chmod(0o700)
+    gate_plugin = None
+    if durable:
+        gate_plugin = lab.root/'reverse_gate.py'
+        gate_plugin.write_text(f'#!{sys.executable}\n' + Path(__file__).with_name('reverse_gate.py').read_text())
+        gate_plugin.chmod(0o700)
+        (lab.root/'quote_plugin.py').write_text(Path(__file__).with_name('quote_plugin.py').read_text())
     payer = lab.lightning('xbt-payer', 'xbt-regtest', xbt)
-    incoming = lab.lightning('xbt-operator', 'xbt-regtest', xbt, plugins=(plugin,))
+    incoming = lab.lightning('xbt-operator', 'xbt-regtest', xbt, plugins=(gate_plugin or plugin,))
     outgoing = lab.lightning('btc-operator', 'regtest', btc)
     receiver = lab.lightning('btc-receiver', 'regtest', btc,
-                             plugins=(plugin,) if fail_outgoing else ())
+                             plugins=(plugin,) if fail_outgoing or recovery in ('pending', 'gate-restart', 'gate-onchain', 'gate-deadline', 'gate-btc-claim', 'gate-btc-timeout') else ())
     nodes = (payer, incoming, outgoing, receiver)
 
     def rpc(node, *args):
@@ -65,7 +75,16 @@ def run(lab, fail_outgoing=False):
     fund(btc, outgoing, receiver)
     print('PASS: funded XBT payer -> operator and BTC operator -> receiver channels', flush=True)
     initial = {n['id']: channel(n)['to_us_msat'] for n in nodes}
-    invoice = rpc(receiver, 'invoice', '100000000msat', 'reverse-receive', 'XBT to BTC regtest')
+    receiver_preimage = None
+    if recovery == 'gate-btc-claim':
+        # Harness-only secret to trigger a receiver on-chain success. It is
+        # never passed to the controller or put in its pending checkpoint.
+        receiver_preimage = secrets.token_hex(32)
+        invoice = lab.rpc([*receiver['cli'], '-k'], 'invoice', 'amount_msat=100000000msat',
+                          'label=reverse-receive', 'description=XBT to BTC regtest',
+                          'preimage='+receiver_preimage)
+    else:
+        invoice = rpc(receiver, 'invoice', '100000000msat', 'reverse-receive', 'XBT to BTC regtest')
     payment_hash = invoice['payment_hash']
     # The operator receives only the BTC invoice; no receiver preimage is used.
     decoded = rpc(outgoing, 'decode', invoice['bolt11'])
@@ -75,6 +94,14 @@ def run(lab, fail_outgoing=False):
             or not decoded.get('payment_secret') or decoded['min_final_cltv_expiry'] > 40):
         raise AssertionError('BTC invoice does not match the reverse fixture')
     secret = secrets.token_hex(32)
+    quote = None
+    if durable:
+        quote = dict(payment_hash=payment_hash, payment_secret=secret,
+                     xbt_amount_msat=200000000, btc_amount_msat=100000000,
+                     btc_invoice=invoice['bolt11'], xbt_channel=channel(incoming)['short_channel_id'],
+                     expires_at=int(time.time())+3600, min_cltv_delta=100, max_cltv_delta=2000)
+        if rpc(incoming, 'reverse-register', json.dumps(quote)) != {'registered': True}:
+            raise AssertionError('reverse quote registration failed')
     unsigned = unsigned_invoice(payment_hash, secret, amount_msat=200000000,
                                 currency='xbtrt', final_cltv=120)
     xbt_invoice = rpc(incoming, 'signinvoice', unsigned)['bolt11']
@@ -111,19 +138,43 @@ def run(lab, fail_outgoing=False):
     if len(attempts(payer)) != 1 or attempts(payer)[0]['status'] != 'pending' or attempts(outgoing):
         raise AssertionError('unexpected payment attempt before outgoing submission')
     print('PASS: ordinary XBT pay held 200,000 sats under BTC invoice hash; test margin verified', flush=True)
+    if durable:
+        status = rpc(incoming, 'reverse-status', payment_hash)
+        if status['terms'] != quote or status['phase'] != 'held' or not status['hook_ready']:
+            raise AssertionError('durable reverse quote not accepted')
+        print('PASS: reverse gate durably bound validated XBT HTLC before BTC spending', flush=True)
     route = [dict(id=decoded['payee'], channel=channel(outgoing)['short_channel_id'],
                   amount_msat=decoded['amount_msat'], delay=40)]
-    lab.rpc([*outgoing['cli'], '-k'], 'sendpay', 'route='+json.dumps(route),
-            'payment_hash='+payment_hash, 'payment_secret='+decoded['payment_secret'],
-            'bolt11='+invoice['bolt11'])
+    if recovery in ('gate-btc-claim', 'gate-btc-timeout'):
+        from reverse_btc_onchain import exercise_btc_onchain
+        exercise_btc_onchain(lab, payer, incoming, outgoing, receiver, xbt, btc,
+                             invoice, decoded, route, quote, gate_plugin, initial,
+                             paying, pay_log, receiver_preimage,
+                             timeout=recovery == 'gate-btc-timeout')
+        return
+    if recovery in ('gate-onchain', 'gate-deadline'):
+        from reverse_onchain import exercise_onchain
+        exercise_onchain(lab, payer, incoming, outgoing, receiver, xbt, btc,
+                         invoice, decoded, xbt_invoice, route, quote, gate_plugin,
+                         initial, paying, pay_log, deadline=recovery == 'gate-deadline')
+        return
+    if recovery:
+        from reverse_recovery import exercise
+        gate = dict(quote=quote, plugin=gate_plugin, xbt=xbt, btc=btc) if durable else None
+        exercise(lab, payer, incoming, outgoing, receiver, invoice, decoded, route, recovery, gate)
+    else:
+        lab.rpc([*outgoing['cli'], '-k'], 'sendpay', 'route='+json.dumps(route),
+                'payment_hash='+payment_hash, 'payment_secret='+decoded['payment_secret'],
+                'bolt11='+invoice['bolt11'])
 
     if fail_outgoing:
-        wait_until(lambda: any(h['payment_hash'] == payment_hash
-                              for h in rpc(receiver, 'xbt-held')['held']), receiver['proc'])
-        wait_until(lambda: committed(outgoing, 'SENT_ADD_ACK_REVOCATION'), outgoing['proc'])
-        wait_until(lambda: committed(receiver, 'RCVD_ADD_ACK_REVOCATION'), receiver['proc'])
-        if rpc(receiver, 'xbt-fail', payment_hash)['failed'] != 1:
-            raise AssertionError('expected exactly one rejected BTC HTLC')
+        if not recovery:
+            wait_until(lambda: any(h['payment_hash'] == payment_hash
+                                  for h in rpc(receiver, 'xbt-held')['held']), receiver['proc'])
+            wait_until(lambda: committed(outgoing, 'SENT_ADD_ACK_REVOCATION'), outgoing['proc'])
+            wait_until(lambda: committed(receiver, 'RCVD_ADD_ACK_REVOCATION'), receiver['proc'])
+            if rpc(receiver, 'xbt-fail', payment_hash)['failed'] != 1:
+                raise AssertionError('expected exactly one rejected BTC HTLC')
 
         def terminal_failure(node):
             records = attempts(node)
@@ -134,11 +185,12 @@ def run(lab, fail_outgoing=False):
             return records[0]['status'] == 'failed'
 
         wait_until(lambda: terminal_failure(outgoing), outgoing['proc'])
-        if attempts(payer)[0]['status'] != 'pending':
-            raise AssertionError('XBT did not remain held until definite BTC failure')
-        print('PASS: BTC attempt definitively failed without preimage; XBT still held', flush=True)
-        if rpc(incoming, 'xbt-fail', payment_hash)['failed'] != 1:
-            raise AssertionError('expected exactly one failed incoming XBT HTLC')
+        if not recovery:
+            if attempts(payer)[0]['status'] != 'pending':
+                raise AssertionError('XBT did not remain held until definite BTC failure')
+            print('PASS: BTC attempt definitively failed without preimage; XBT still held', flush=True)
+            if rpc(incoming, 'xbt-fail', payment_hash)['failed'] != 1:
+                raise AssertionError('expected exactly one failed incoming XBT HTLC')
         paying.wait(timeout=30)
         if paying.returncode == 0:
             raise AssertionError('XBT payer unexpectedly succeeded')
@@ -151,7 +203,7 @@ def run(lab, fail_outgoing=False):
         preimage = result['payment_preimage']
         if hashlib.sha256(bytes.fromhex(preimage)).hexdigest() != payment_hash:
             raise AssertionError('BTC returned a mismatching preimage')
-        if rpc(incoming, 'xbt-release', preimage)['released'] != 1:
+        if not recovery and rpc(incoming, 'xbt-release', preimage)['released'] != 1:
             raise AssertionError('expected exactly one XBT HTLC settlement')
         paying.wait(timeout=30)
         if paying.returncode:
@@ -182,7 +234,7 @@ def run(lab, fail_outgoing=False):
         raise AssertionError('BTC receiver did not receive agreed amount')
     else:
         print('PASS: no pending HTLCs; all four balances match agreed amounts', flush=True)
-    mode = 'definite BTC rejection' if fail_outgoing else 'happy path'
+    mode = 'controller recovery: '+recovery if recovery else 'definite BTC rejection' if fail_outgoing else 'happy path'
     print(f'XBT -> BTC reverse swap test OK ({mode}; direct channels; regtest only)', flush=True)
 
 
@@ -190,7 +242,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bitcoind', required=True, type=Path)
     parser.add_argument('--bitcoin-cli', required=True, type=Path)
-    parser.add_argument('--fail-outgoing', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--fail-outgoing', action='store_true')
+    mode.add_argument('--crash-after-btc', dest='recovery', action='store_const', const='after-btc')
+    mode.add_argument('--crash-while-pending', dest='recovery', action='store_const', const='pending')
+    mode.add_argument('--pending-failure', dest='recovery', action='store_const', const='pending-failure')
+    mode.add_argument('--pending-restart', dest='recovery', action='store_const', const='gate-restart')
+    mode.add_argument('--pending-restart-failure', dest='recovery', action='store_const', const='gate-restart-failure')
+    mode.add_argument('--release-recovery', dest='recovery', action='store_const', const='gate-release')
+    mode.add_argument('--failure-release-recovery', dest='recovery', action='store_const', const='gate-failure')
+    mode.add_argument('--onchain-claim', dest='recovery', action='store_const', const='gate-onchain')
+    mode.add_argument('--xbt-deadline', dest='recovery', action='store_const', const='gate-deadline')
+    mode.add_argument('--btc-onchain-preimage', dest='recovery', action='store_const', const='gate-btc-claim')
+    mode.add_argument('--btc-onchain-timeout', dest='recovery', action='store_const', const='gate-btc-timeout')
     parser.add_argument('--work-dir', type=Path)
     args = parser.parse_args()
     temporary = None
@@ -203,7 +267,7 @@ def main():
     lab = Lab(root, str(args.bitcoind.resolve()), str(args.bitcoin_cli.resolve()))
     print(f'Test directory: {root}', flush=True)
     try:
-        run(lab, args.fail_outgoing)
+        run(lab, args.fail_outgoing, args.recovery)
     finally:
         lab.close()
         if temporary:

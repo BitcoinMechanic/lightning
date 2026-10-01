@@ -31,15 +31,33 @@ class Case:
 
 def cases():
     result = [Case('headers', (sys.executable, str(HERE / 'check_headers.py')))]
-    for name in ('reverse_invoice', 'remote_receiver', 'swap_rpc', 'service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
+    for name in ('reverse_deadline', 'reverse_onchain', 'reverse_hints', 'reverse_route', 'reverse_gate', 'reverse_controller', 'reverse_invoice', 'remote_receiver', 'swap_rpc', 'service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
         result.append(Case('unit-' + name.replace('_', '-'),
                            (sys.executable, str(HERE / ('test_' + name + '.py')), '-v')))
     for name in ('run-block_blake2b', 'run-bitcoin_block_from_hex'):
         result.append(Case(name, (str(ROOT / 'bitcoin/test' / name),)))
     result.append(Case('run-xbt-maturity', (str(ROOT / 'common/test/run-xbt-maturity'),)))
     result.append(Case('isolation', (sys.executable, str(HERE / 'smoke_regtest.py')), True))
-    for flag, name in (('', 'reverse-swap'), ('--fail-outgoing', 'reverse-swap-rejection')):
+    for flag, name in (('', 'reverse-swap'), ('--fail-outgoing', 'reverse-swap-rejection'),
+                       ('--crash-after-btc', 'reverse-crash-after-btc'),
+                       ('--crash-while-pending', 'reverse-pending'),
+                       ('--pending-failure', 'reverse-pending-failure'),
+                       ('--pending-restart', 'reverse-pending-restart'),
+                       ('--pending-restart-failure', 'reverse-pending-restart-failure'),
+                       ('--release-recovery', 'reverse-release-recovery'),
+                       ('--failure-release-recovery', 'reverse-failure-release-recovery'),
+                       ('--onchain-claim', 'reverse-onchain-claim'),
+                       ('--xbt-deadline', 'reverse-xbt-deadline'),
+                       ('--btc-onchain-preimage', 'reverse-btc-onchain-preimage'),
+                       ('--btc-onchain-timeout', 'reverse-btc-onchain-timeout')):
         result.append(Case(name, (sys.executable, str(HERE / 'reverse_regtest.py')) +
+                           ((flag,) if flag else ()), True))
+    for flag, name in (('', 'reverse-routed'), ('--fail-outgoing', 'reverse-routed-rejection'),
+                       ('--fee-limit', 'reverse-routed-fee-limit')):
+        result.append(Case(name, (sys.executable, str(HERE / 'routed_reverse_regtest.py')) +
+                           ((flag,) if flag else ()), True))
+    for flag, name in (('', 'reverse-private-hint'), ('--fail-outgoing', 'reverse-private-rejection')):
+        result.append(Case(name, (sys.executable, str(HERE / 'routed_reverse_regtest.py'), '--private-hint') +
                            ((flag,) if flag else ()), True))
     for mode in ('', 'force-close', 'htlc-timeout', 'preimage-claim'):
         result.append(Case('funded-' + (mode or 'mutual-close'),
