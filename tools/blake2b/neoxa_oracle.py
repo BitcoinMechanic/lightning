@@ -47,10 +47,11 @@ def fetch(kind):
 
 def estimate(ticker, book, xbt_sats, *, now_ms, margin_bps=0,
              max_age_seconds=30, max_spread_bps=500, max_slippage_bps=100,
+             max_reference_gap_bps=200,
              min_price=None, max_price=None):
     if type(xbt_sats) is not int or not 0 < xbt_sats <= 21000000 * 100000000:
         raise ValueError('invalid XBT amount')
-    for value in (margin_bps, max_spread_bps, max_slippage_bps):
+    for value in (margin_bps, max_spread_bps, max_slippage_bps, max_reference_gap_bps):
         if type(value) is not int or not 0 <= value <= 10000:
             raise ValueError('basis points must be integers from 0 to 10000')
     if type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 300:
@@ -81,6 +82,11 @@ def estimate(ticker, book, xbt_sats, *, now_ms, margin_bps=0,
         levels.sort()
         if levels[0][0] < bid:
             raise ValueError('inconsistent ticker and order book')
+        # The ticker can include AMM samples; only ordinary asks supply fills.
+        best_limit_ask = levels[0][0]
+        reference_gap = abs(best_limit_ask-ask) / ask * BPS
+        if abs(best_limit_ask-ask) * BPS > ask * max_reference_gap_bps:
+            raise ValueError('limit ask differs from ticker beyond reference gap limit')
         remaining = D(xbt_sats) / SAT
         cost = D(0)
         fills = []
@@ -94,7 +100,8 @@ def estimate(ticker, book, xbt_sats, *, now_ms, margin_bps=0,
         if remaining:
             raise ValueError('insufficient limit-order depth')
         average = cost / (D(xbt_sats) / SAT)
-        if (average/ask-1)*BPS > max_slippage_bps:
+        depth_slippage = (average-best_limit_ask) / best_limit_ask * BPS
+        if (average-best_limit_ask)*BPS > best_limit_ask*max_slippage_bps:
             raise ValueError('replacement cost exceeds slippage limit')
         if min_price is not None and average < number(min_price):
             raise ValueError('price below operator minimum')
@@ -105,8 +112,13 @@ def estimate(ticker, book, xbt_sats, *, now_ms, margin_bps=0,
                     ticker_computed_at_ms=timestamp, checked_at_ms=now_ms,
                     xbt_sats=xbt_sats, btc_sats=btc_sats, margin_bps=margin_bps,
                     average_btc_per_xbt=str(average), fills=fills,
+                    ticker_best_ask_btc_per_xbt=str(ask),
+                    best_limit_ask_btc_per_xbt=str(best_limit_ask),
+                    reference_gap_bps=str(reference_gap),
+                    depth_slippage_bps=str(depth_slippage),
                     policy=dict(max_age_seconds=max_age_seconds,
                                 max_spread_bps=max_spread_bps, max_slippage_bps=max_slippage_bps,
+                                max_reference_gap_bps=max_reference_gap_bps,
                                 min_price=min_price, max_price=max_price),
                     read_only=True, exchange_fees_included=False,
                     lightning_fees_included=False)
@@ -119,6 +131,7 @@ def main():
     parser.add_argument('--max-age-seconds', type=int, default=30)
     parser.add_argument('--max-spread-bps', type=int, default=500)
     parser.add_argument('--max-slippage-bps', type=int, default=100)
+    parser.add_argument('--max-reference-gap-bps', type=int, default=200)
     parser.add_argument('--min-price')
     parser.add_argument('--max-price')
     args = parser.parse_args()

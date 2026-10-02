@@ -112,7 +112,7 @@ quotes use that default, alongside the unchanged 100-bps depth-slippage cap.
 Audit output includes `ticker_best_bid_btc_per_xbt`,
 `best_limit_bid_btc_per_xbt`, `reference_gap_bps`, `depth_slippage_bps` and both
 policy caps. A reference-gap refusal has API code `market_reference_gap`.
-This change affects reverse quotes only; forward ask pricing is unchanged.
+Forward ask pricing uses the corresponding ask-side checks described below.
 Existing saved quotes and uncertain request journals are not rewritten.
 Optional BTC-per-XBT price bounds remain available. The book itself lacks a
 source timestamp; two REST responses are not an atomic snapshot. HTTPS and
@@ -122,3 +122,22 @@ no cached-price fallback when data fails validation.
 This does not establish live swap feasibility: the route, channel capacities,
 untrimmed HTLC minimums and live timing policy are not checked. Neither the
 forward market profile nor the regtest-only reverse controller is modified.
+
+
+## Forward ask reference and depth checks
+
+Forward BTC-to-XBT quotes also separate the ticker/limit-order gap from depth
+slippage. The best ordinary ask must be within 2% of the ticker best ask in
+absolute terms. The weighted fill price must be no more than 1% above that
+ordinary ask. AMM samples contribute no fill quantity. This deliberately
+replaces the old combined 1% ticker-to-average cap; at both adverse boundaries,
+the average may be 3.02% above the ticker ask. Quote BTC caps and margin still
+apply to the final rounded price.
+
+The reader supports `--max-reference-gap-bps` (default 200); the live service
+uses the default. Audits include `ticker_best_ask_btc_per_xbt`,
+`best_limit_ask_btc_per_xbt`, `reference_gap_bps`, `depth_slippage_bps` and both
+policy caps. Old quote audits are not rewritten or repriced. An oracle refusal
+before the swap directory exists has not registered an invoice or started a
+payment. Preserve its error output; use a different output filename when
+retrying quote creation so shell noclobber does not prevent the retry.
