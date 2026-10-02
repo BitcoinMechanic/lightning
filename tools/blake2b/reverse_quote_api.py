@@ -40,6 +40,10 @@ class Quotes:
         if type(auto_process) is not bool:
             raise ValueError('auto_process must be boolean')
         self.auto_process = auto_process
+        self.receive = None
+        if "receive_config" in settings:
+            from receive_service import ReceiveQuotes
+            self.receive = ReceiveQuotes(settings, auto_process=auto_process)
         from reverse_check import check
         self.inspector = inspector or check
         self.root = Path(settings['swap_root'])
@@ -184,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(401, {'error': 'unauthorized'})
             return
         port = self.server.server_port
-        if (self.path != '/v1/quote' or self.headers.get_all('Origin')
+        if (self.path not in ('/v1/quote', '/v1/receive') or self.headers.get_all('Origin')
                 or self.headers.get_all('Transfer-Encoding')
                 or self.headers.get_all('Host', []) != [f'127.0.0.1:{port}']
                 or self.headers.get_all('Content-Type', []) != ['application/json']):
@@ -203,7 +207,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {'error': 'request_rejected'})
             return
         try:
-            offer = self.server.quotes.quote(request)
+            handler = self.server.quotes if self.path == '/v1/quote' else self.server.quotes.receive
+            if handler is None:
+                raise ValueError('receiving API not enabled')
+            offer = handler.quote(request)
         except QuoteRefused as error:
             self.reply(409, error.public())
             return

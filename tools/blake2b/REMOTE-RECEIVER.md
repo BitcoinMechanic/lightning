@@ -115,3 +115,82 @@ requires checking network names, XBT invoice encoding, units, authentication
 and RPC compatibility. A headless VM can serve a web UI accessed from another
 computer; it does not need a desktop environment. The invoice-file workflow
 does not depend on a GUI.
+
+## Authenticated customer receiving workflow
+
+Patch 0090 adds `/v1/receive` to the existing loopback API. It uses the same
+customer-bound bearer credential and SSH tunnel. It remains disabled until
+`receive_setup.py` explicitly stores a bounded `receive_config` in the operator
+settings. The quote API's existing `--auto-process` option authorizes only new
+receiving requests created after that enablement; old manual quotes and cached
+requests are not upgraded. No public HTTP listener or customer RPC is added.
+
+First run the unit and funded tests on the tower:
+
+```sh
+.venv/bin/python tools/blake2b/test_receive_api.py -v &&
+.venv/bin/python tools/blake2b/test_customer_receive.py -v
+
+.venv/bin/python tools/blake2b/receive_api_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli
+.venv/bin/python tools/blake2b/receive_api_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --fail-outgoing
+```
+
+The funded harness uses real regtest nodes, signed invoices, authenticated HTTP,
+a committed incoming BTC HTLC and the existing outgoing controller. Its isolated
+quote adapter supplies a fixed 1,500-sat price and regtest currencies; it does
+not activate live policy or contact Neoxa. Separate unit tests exercise the real
+live market quote preparation, caps and controller with mocked node RPCs.
+Both funded cases check all four channel balances and exactly one outgoing
+attempt across pending recovery. `--work-dir /tmp/new-short-path` retains logs.
+
+After those pass, explicitly enable receiving with an existing, bounded market
+configuration for this same customer and the two selected channels:
+
+```sh
+.venv/bin/python tools/blake2b/receive_setup.py \
+  --config "$HOME/cln-live-pilot/operators-vm-receive-1.json" &&
+systemctl --user restart cln-swap-recovery.service cln-swap-quotes.service
+```
+
+Setup checks identities, reserves and connected channels without pending HTLCs.
+It preserves other settings and refuses a different already-enabled receive
+configuration. Actual quote creation rechecks balances, oracle freshness,
+amount caps, invoice recipient and exact channel bindings. The user service
+must already run the quote API with `--auto-process` for automatic processing.
+
+Install the same code on the customer VM. With the tunnel running, use a new
+private directory for each new receiving intent:
+
+```sh
+.venv/bin/python tools/blake2b/customer_receive.py \
+  --lightning-dir "$HOME/cln-xbt-customer" \
+  --directory "$HOME/cln-customer-swaps/api-receive-1" \
+  --xbt-sats 325000 --max-btc-sats 1480
+```
+
+This example is not a promise of liquidity or price; a previous forward swap
+may have consumed the operator's XBT balance. The command creates an invoice
+only on the customer's node, validates the returned BTC invoice's signature,
+amount, currency, expiry and matching payment hash, then displays the BTC
+invoice for the payer. Its output is private: share the invoice with the payer,
+not public logs. A quote lasts up to 120 seconds. No customer payment RPC is
+called. The customer is not required to keep the command running; the tower
+worker starts the authorized swap once BTC is committed. Keep both nodes and
+the peer connection available.
+
+Rerun the exact same command to recover a lost reply or check receipt. It reuses
+the original saved invoice label, request ID and offer. A paid invoice returns
+only the receipt summary. Expired offers do not cause automatic requoting.
+Known pre-creation refusals can be retried explicitly with `--retry-quote`;
+unknown outcomes stay recorded for inspection. Preserve all attempt directories.
+A new request ID cannot reuse an invoice already assigned to a request.
+
+The worker checks a durable authorization digest under the same service lock
+used by manual startup. No authorization means no new outgoing submission.
+Started payments continue recovery even after their authorization expires.
+The controller still saves submission intent before sending and never resends
+an uncertain outgoing attempt. Manual forward swaps keep their previous
+recovery-only behavior. Changing the bound customer requires a matching new
+receiving configuration; the existing configuration is not silently retargeted.

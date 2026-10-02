@@ -22,9 +22,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('quote endpoint redirect refused')
 
 
-def transport(url, token, body):
+def transport(url, token, body, endpoint_path="/v1/quote"):
+    if endpoint_path not in ("/v1/quote", "/v1/receive"):
+        raise ValueError("unsupported quote endpoint")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    request = urllib.request.Request(url+'/v1/quote', data=json.dumps(body).encode(),
+    request = urllib.request.Request(url+endpoint_path, data=json.dumps(body).encode(),
         headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'})
     try:
         with opener.open(request, timeout=90) as response:

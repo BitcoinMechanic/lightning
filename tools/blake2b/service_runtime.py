@@ -91,6 +91,13 @@ def tick(settings):
             if (config['btc_cli'] != settings['btc_cli'] or config['xbt_cli'] != settings['xbt_cli']
                     or quote['node_ids'] != settings['node_ids']):
                 raise ValueError('quote node binding mismatch')
+            if (quote_path.parent/'receive-authorization.json').exists():
+                from receive_service import process
+                result = process(quote_path.parent, settings)
+                if result.get('phase') not in ('btc_released', 'btc_failed'):
+                    report.update(result)
+                    health['swaps'].append(report)
+                continue
             path = quote_path.parent/'state.json'
             if not path.exists():
                 if 'btc_invoice' not in quote:

@@ -1,8 +1,9 @@
 """Public reason codes for definite refusals before quote creation."""
 REASONS = {
-    'market_reference_gap': 'Ordinary exchange bids differ too far from the ticker price.',
-    'market_slippage': 'Exchange bids exceed the allowed slippage; request a quote when the market meets policy.',
-    'market_depth': 'Insufficient exchange bid liquidity for this quote.',
+    'btc_price_cap': 'The BTC quote exceeds the receiving price cap.',
+    'market_reference_gap': 'Ordinary exchange limit prices differ too far from the ticker price.',
+    'market_slippage': 'Exchange prices exceed the allowed slippage; request a quote when the market meets policy.',
+    'market_depth': 'Insufficient exchange limit-order liquidity for this quote.',
     'market_spread': 'Exchange spread is crossed or exceeds the allowed limit.',
     'market_stale': 'Exchange price timestamp is stale or in the future.',
     'market_inconsistent': 'Exchange ticker and order book disagree.',
