@@ -69,6 +69,11 @@ def process_record(directory, settings, rpc=None, controller=None):
         kwargs['controller'] = controller
     rpc = rpc or RPC.call
     controller = controller or reconcile
+    if settings.get('reverse_previous_customers'):
+        from switch_customer import recovery_settings
+        historical = recovery_settings(settings, private_load(directory/'reverse-quote.json'))
+        if historical is not settings:
+            return recover_record(directory, historical, **kwargs)  # Never originate old-customer swaps.
     state_path = directory/'reverse-state.json'
     # Existing obligations must recover even if authorization expired or was removed.
     started = state_path.exists() and private_load(state_path)['phase'] != 'prepared'

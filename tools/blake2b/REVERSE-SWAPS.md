@@ -994,3 +994,84 @@ systemctl --user restart cln-swap-quotes.service
 ```
 
 This does not restart either Lightning node or the recovery worker.
+
+
+### Read-only operator dashboard
+
+```sh
+.venv/bin/python tools/blake2b/operator_status.py
+```
+
+This command queries only operator `getinfo` and `listpeerchannels`, reads the
+worker's saved health snapshot and quote request journals, checks user service
+states, and probes the localhost API with an unauthenticated empty request. The
+expected response is HTTP 401; no quote or payment is requested. Use `--api-port`
+if the listener uses a nondefault port. The probe confirms reachability and auth
+rejection, not valid-token access or quote eligibility.
+
+Amounts are operator-side channel liquidity in sats. `clear_channel_spendable_sats`
+is available for outgoing payments across connected normal channels with no
+pending HTLCs; `clear_channel_receivable_sats` is incoming capacity. The bound
+customer subsection limits these totals to the configured customer peer. Totals
+are not a single-route guarantee; current market pricing and route feasibility
+are not checked. Missing or malformed capacities produce an inspection flag.
+
+`recovery_snapshot` is cached, with an explicit age and stale flag after 30
+seconds. Nonterminal reports are not all pending payments: they may include
+waiting quotes or manual-recovery conditions. `creating_or_uncertain` includes
+in-progress requests as well as interrupted ones; it is not proof of a failure.
+Published and refused request counts include historical records, including paid
+quotes. No requests are deleted, resumed, authorized or paid by this command.
+Node IDs, channel IDs, hashes, filenames, invoice contents and secrets are omitted.
+
+
+### Switch the bounded pilot customer to another node
+
+The migration consumes private `~/.config/cln-swaps/vm-customer.json` containing
+`customer_id`. It requires a connected normal channel to that node, no pending
+HTLCs, no held reverse hooks, and terminal historical reverse swaps. Forward
+quotes must be terminal or expired and demonstrably unaccepted by their gate.
+The API and recovery services must be stopped during the switch. Do not run
+manual quote or controller commands concurrently.
+
+```sh
+systemctl --user stop cln-swap-quotes.service cln-swap-recovery.service
+.venv/bin/python tools/blake2b/switch_customer.py
+```
+
+The private migration journal preserves both settings versions and both token
+versions before replacement. Interrupted migration resumes with the same command;
+any unrecognized settings or changed target are refused. Do not delete the journal.
+The new customer is bound in both activation and API credentials. Historical
+settings are retained for recovery-only processing of old reverse quotes, never
+for originating another outgoing payment. Existing quote, authorization, gate,
+wallet and channel files are not changed. Existing API request IDs remain bound
+to their original customer and cannot be reused by the new customer.
+
+After successful migration:
+
+```sh
+systemctl --user start cln-swap-recovery.service cln-swap-quotes.service
+.venv/bin/python tools/blake2b/operator_status.py
+```
+
+The running XBT gate does not need a node restart: it validates each quote's own
+terms and retains its existing durable records. Its activation remains enabled;
+the launcher validates the new settings on subsequent starts. Transfer only the
+new `customer-api.json` to the customer VM through a private channel, not the
+settings or migration journal (which contain operator configuration). Keep the
+transferred credential mode 0600. Reuse of an already migrated journal is
+idempotent; this command is not a general multi-customer administration interface.
+
+
+### Market-policy refusals
+
+Known market-validation failures now return definite pre-creation refusal codes:
+`market_slippage`, `market_depth`, `market_spread`, `market_stale`, and
+`market_inconsistent`. Messages are static; no exchange payloads, invoice details
+or arbitrary exception text are exposed. The oracle's policy limits are unchanged.
+Once market conditions satisfy policy, the customer can retry the same refused
+request with `--retry-quote`. Unexpected errors, other diagnostic stages and old
+`creating` records remain uncertain and are not reclassified by this update.
+Restart the quote API after updating the operator. Customer clients also need the
+updated `quote_refusal.py` to recognize the new response codes.

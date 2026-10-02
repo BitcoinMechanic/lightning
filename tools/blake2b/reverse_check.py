@@ -40,6 +40,7 @@ class DiagnosticError(CheckError):
                 pass
         # Only exact static messages from our validators may be displayed.
         safe = {
+            'limit bid differs from ticker beyond reference gap limit',
             'stale or future ticker timestamp', 'insufficient limit-order bid depth',
             'bid proceeds fall below slippage limit', 'crossed or excessive market spread',
             'inconsistent ticker and order book', 'no limit-order bid liquidity',

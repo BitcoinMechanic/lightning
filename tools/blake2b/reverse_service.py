@@ -17,8 +17,8 @@ from service_manager import private_load
 from swap_rpc import RPC
 from swap_controller import save
 from reverse_controller import run as reconcile
-from reverse_check import check, private_invoice
-from quote_refusal import QuoteRefused
+from reverse_check import check, private_invoice, DiagnosticError
+from quote_refusal import QuoteRefused, market_refusal
 from reverse_route import plan
 from reverse_policy import inspect_remote_policies
 from reverse_metadata import invoice_metadata
@@ -59,9 +59,15 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
         raise ValueError('reverse swap must be an immediate child of the monitored swap root')
     config = binding(settings)
     clis = dict(btc=config['btc_cli'], operator=config['xbt_cli'])
-    summary = inspector(invoice, clis, rpc=rpc, max_routing_fee_sats=30,
-                        margin_bps=100, max_xbt_sats=500000, max_delay=576,
-                        _service_regtest=profile == SERVICE_REGTEST, payer_id=config['payer_id'])
+    try:
+        summary = inspector(invoice, clis, rpc=rpc, max_routing_fee_sats=30,
+                            margin_bps=100, max_xbt_sats=500000, max_delay=576,
+                            _service_regtest=profile == SERVICE_REGTEST, payer_id=config['payer_id'])
+    except DiagnosticError as error:
+        reason = market_refusal(error)
+        if reason is None:
+            raise
+        raise QuoteRefused(reason) from None
     refusal_reasons = {
         'insufficient XBT payer-to-operator liquidity': 'insufficient_xbt_liquidity',
         'insufficient BTC first-hop liquidity including routing fee': 'insufficient_btc_liquidity',

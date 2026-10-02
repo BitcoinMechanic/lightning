@@ -91,11 +91,53 @@ class ReverseOracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.quote()
         self.ticker['ticker']['bestAsk'] = '0.00401'
-        self.book['bids'][0]['price'] = '0.00396'
-        self.quote()  # Exactly 100bps below best bid.
-        self.book['bids'][0]['price'] = '0.0039599999'
-        with self.assertRaises(ValueError):
+        self.book['bids'][0]['price'] = '0.00392'
+        result = self.quote()  # Exactly 200bps ticker-to-limit gap, no depth slippage.
+        self.assertEqual(result['reference_gap_bps'], '200')
+        self.assertEqual(result['depth_slippage_bps'], '0')
+        self.book['bids'][0]['price'] = '0.0039199999'
+        with self.assertRaisesRegex(ValueError, 'reference gap limit'):
+            self.quote(max_slippage_bps=10000)
+
+    def test_observed_amm_best_bid_is_not_limit_depth_reference(self):
+        self.ticker['ticker'].update(bestBid='0.00442043', bestAsk='0.00449177')
+        self.book['bids'] = [
+            dict(price='0.00442043', quantity='0.18580521', isAmm=True),
+            dict(price='0.00439821', quantity='0.17215822', isAmm=True),
+            dict(price='0.0043639', quantity='0.7681374600000002')]
+        result = self.quote(1500, max_routing_fee_sats=30)
+        self.assertEqual(result['xbt_sats'], 354110)
+        self.assertEqual(len(result['fills']), 1)
+        self.assertEqual(result['best_limit_bid_btc_per_xbt'], '0.0043639')
+        self.assertEqual(result['ticker_best_bid_btc_per_xbt'], '0.00442043')
+        self.assertEqual(result['depth_slippage_bps'], '0')
+        self.assertGreater(Fraction(result['reference_gap_bps']), 100)
+        self.assertLess(Fraction(result['reference_gap_bps']), 200)
+        self.assertEqual(result['policy']['max_reference_gap_bps'], 200)
+        self.assertEqual(result['policy']['max_slippage_bps'], 100)
+        with self.assertRaisesRegex(ValueError, 'reference gap limit'):
+            self.quote(1500, max_routing_fee_sats=30, max_reference_gap_bps=100)
+
+    def test_depth_slippage_boundary_independent_of_reference_gap(self):
+        self.book['bids'] = [dict(price='0.004', quantity='0.0005'),
+                             dict(price='0.00392', quantity='1')]
+        result = self.quote(396, max_routing_fee_sats=0, margin_bps=0)
+        self.assertEqual(result['xbt_sats'], 100000)
+        self.assertEqual(result['depth_slippage_bps'], '100')
+        self.assertEqual(result['reference_gap_bps'], '0')
+        self.book['bids'][1]['price'] = '0.003919999'
+        with self.assertRaisesRegex(ValueError, 'slippage limit'):
+            self.quote(396, max_routing_fee_sats=0, margin_bps=0,
+                       max_reference_gap_bps=10000)
+
+    def test_reference_gap_bounds_both_directions(self):
+        self.ticker['ticker']['bestAsk'] = '0.0042'
+        self.book['bids'][0]['price'] = '0.00408'
+        self.assertEqual(self.quote()['reference_gap_bps'], '200')
+        self.book['bids'][0]['price'] = '0.0040800001'
+        with self.assertRaisesRegex(ValueError, 'reference gap limit'):
             self.quote()
+
 
     def test_market_identity_crossed_and_inconsistent_book(self):
         for data in (self.ticker, self.book):
@@ -120,6 +162,8 @@ class ReverseOracleTests(unittest.TestCase):
         for options in (dict(max_routing_fee_sats=-1), dict(max_routing_fee_sats=True),
                         dict(max_routing_fee_sats=oracle.SUPPLY_SATS), dict(margin_bps=-1),
                         dict(margin_bps=10001), dict(max_age_seconds=0),
+                        dict(max_reference_gap_bps=-1), dict(max_reference_gap_bps=True),
+                        dict(max_reference_gap_bps=10001), dict(max_reference_gap_bps='200'),
                         dict(min_price='0.005'), dict(max_price='0.003'),
                         dict(min_price='0.005', max_price='0.004')):
             with self.subTest(options=options), self.assertRaises(ValueError):

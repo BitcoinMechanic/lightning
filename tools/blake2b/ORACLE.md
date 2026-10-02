@@ -99,8 +99,21 @@ It includes fills, timestamps and the average BTC-per-XBT bid price. Exchange
 trading and withdrawal fees remain excluded. This is indicative book pricing,
 not guaranteed executable proceeds or a liquidity reservation.
 
-The existing 30-second ticker age, 5% spread and 1% slippage defaults apply.
-For bids, slippage is the average sale price falling below the ticker best bid.
+Reverse quotes retain the 30-second ticker age and 5% spread defaults.
+Depth slippage is capped at 1%, measured from the best usable **ordinary limit
+bid** to the weighted average fill price. AMM samples remain excluded from all
+fill quantities. Separately, the absolute gap between that best limit bid and
+the ticker best bid is capped at 2% of the ticker bid. This intentionally permits
+more ticker-to-limit divergence than the previous combined 1% check. At both
+adverse boundaries, the average can be 2.98% below the ticker bid.
+
+The standalone reader exposes `--max-reference-gap-bps` (default 200); service
+quotes use that default, alongside the unchanged 100-bps depth-slippage cap.
+Audit output includes `ticker_best_bid_btc_per_xbt`,
+`best_limit_bid_btc_per_xbt`, `reference_gap_bps`, `depth_slippage_bps` and both
+policy caps. A reference-gap refusal has API code `market_reference_gap`.
+This change affects reverse quotes only; forward ask pricing is unchanged.
+Existing saved quotes and uncertain request journals are not rewritten.
 Optional BTC-per-XBT price bounds remain available. The book itself lacks a
 source timestamp; two REST responses are not an atomic snapshot. HTTPS and
 redirect protections are inherited from the forward oracle reader. There is

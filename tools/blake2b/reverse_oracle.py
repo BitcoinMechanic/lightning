@@ -25,13 +25,14 @@ def display(value):
 
 def estimate(ticker, book, btc_sats, *, max_routing_fee_sats, now_ms,
              margin_bps=0, max_age_seconds=30, max_spread_bps=500,
-             max_slippage_bps=100, min_price=None, max_price=None):
+             max_slippage_bps=100, max_reference_gap_bps=200,
+             min_price=None, max_price=None):
     if type(btc_sats) is not int or not 0 < btc_sats <= SUPPLY_SATS:
         raise ValueError('invalid BTC amount')
     if (type(max_routing_fee_sats) is not int or not 0 <= max_routing_fee_sats <= SUPPLY_SATS
             or btc_sats + max_routing_fee_sats > SUPPLY_SATS):
         raise ValueError('invalid BTC routing-fee allowance')
-    for value in (margin_bps, max_spread_bps, max_slippage_bps):
+    for value in (margin_bps, max_spread_bps, max_slippage_bps, max_reference_gap_bps):
         if type(value) is not int or not 0 <= value <= 10000:
             raise ValueError('basis points must be integers from 0 to 10000')
     if type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 300:
@@ -69,6 +70,12 @@ def estimate(ticker, book, btc_sats, *, max_routing_fee_sats, now_ms,
     levels.sort(reverse=True)
     if levels[0][0] > ask:
         raise ValueError('inconsistent ticker and order book')
+    # Ticker bestBid may be an AMM sample, which is not executable limit depth.
+    # Bound snapshot disagreement separately from walking the ordinary bids.
+    best_limit_bid = levels[0][0]
+    reference_gap = abs(bid-best_limit_bid) * 10000 / bid
+    if reference_gap > max_reference_gap_bps:
+        raise ValueError('limit bid differs from ticker beyond reference gap limit')
     budget = btc_sats + max_routing_fee_sats
     target = Fraction(budget * (10000+margin_bps), 10000)
     proceeds, xbt_sats, fills = Fraction(0), 0, []
@@ -86,7 +93,8 @@ def estimate(ticker, book, btc_sats, *, max_routing_fee_sats, now_ms,
     if xbt_sats > SUPPLY_SATS:
         raise ValueError('required XBT exceeds supply bound')
     average = proceeds / xbt_sats
-    if (bid-average)*10000 > bid*max_slippage_bps:
+    depth_slippage = (best_limit_bid-average) * 10000 / best_limit_bid
+    if depth_slippage > max_slippage_bps:
         raise ValueError('bid proceeds fall below slippage limit')
     if lower is not None and average < lower:
         raise ValueError('price below operator minimum')
@@ -99,8 +107,14 @@ def estimate(ticker, book, btc_sats, *, max_routing_fee_sats, now_ms,
                 target_bid_proceeds_btc_sats=display(target), xbt_sats=xbt_sats,
                 estimated_bid_proceeds_btc_sats=display(proceeds),
                 average_btc_per_xbt=display(average), fills=fills,
+                ticker_best_bid_btc_per_xbt=display(bid),
+                best_limit_bid_btc_per_xbt=display(best_limit_bid),
+                reference_gap_bps=display(reference_gap),
+                depth_slippage_bps=display(depth_slippage),
                 policy=dict(max_age_seconds=max_age_seconds, max_spread_bps=max_spread_bps,
-                            max_slippage_bps=max_slippage_bps, min_price=min_price, max_price=max_price),
+                            max_slippage_bps=max_slippage_bps,
+                            max_reference_gap_bps=max_reference_gap_bps,
+                            min_price=min_price, max_price=max_price),
                 read_only=True, exchange_fees_included=False,
                 routing_fee_allowance_included=True, route_checked=False,
                 channel_capacity_checked=False)
@@ -114,6 +128,7 @@ def main():
     parser.add_argument('--max-age-seconds', type=int, default=30)
     parser.add_argument('--max-spread-bps', type=int, default=500)
     parser.add_argument('--max-slippage-bps', type=int, default=100)
+    parser.add_argument('--max-reference-gap-bps', type=int, default=200)
     parser.add_argument('--min-price')
     parser.add_argument('--max-price')
     args = parser.parse_args()
