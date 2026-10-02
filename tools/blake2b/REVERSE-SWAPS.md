@@ -1127,3 +1127,61 @@ incoming XBT path.
 
 The regression catalog adds `unit-incoming-xbt`, `reverse-any-xbt-first`,
 `reverse-any-xbt-second`, and `reverse-any-xbt-second-failure` (114 cases total).
+
+
+### Routed incoming XBT regtest
+
+`reverse_service_regtest.py --routed-xbt --auto-process` places an XBT
+relay between the paying wallet and the coordinator. The payer has no channel
+to the coordinator. An unused second wallet's direct channel remains as a
+control. The quote carries no payer identity or incoming channel; after the
+HTLC arrives, the service pins the relay-facing channel and funding outpoint.
+
+The fixture uses ordinary CLN `pay` with a 10-sat routing-fee cap. Its XBT
+relay charges exactly 5 sats. This exercises network routing without changing
+the customer helper, whose default remains a direct channel and zero routing
+fees. It also retains the separate two-hop BTC route and its 5-sat relay fee.
+
+Both operators restart while the swap is pending. Success verifies the
+preimage, both relay fees, all channel balances, and the original BTC attempt.
+The rejection variant verifies refund through the XBT relay, zero earned
+relay fees, restored balances and no pending HTLCs. The coordinator's incoming
+pin identifies the adjacent relay, not the original payer.
+
+```sh
+.venv/bin/python tools/blake2b/test_routed_xbt.py -v &&
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --routed-xbt --auto-process &&
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --routed-xbt --auto-process --fail-outgoing
+```
+
+The regression catalog includes both funded cases and the fixture assertions.
+These use disposable regtest nodes and a deterministic market fixture; they
+neither enable live execution nor change the operator's live configuration.
+
+
+### Customer helper over routed XBT
+
+`reverse_service_regtest.py --customer-routed-xbt --auto-process` uses the same
+no-direct-channel topology through the actual customer review, payment and
+recovery helper. Review persists a 10-sat XBT routing cap before submission.
+The XBT relay earns 5 sats on success and zero on the BTC rejection/refund path.
+Both coordinators restart while the payment is pending; repeated customer and
+operator recovery reuses the original payment. All channel balances and both
+relay fees are checked. This is a separate case from the ordinary `pay` test.
+
+```sh
+.venv/bin/python tools/blake2b/test_customer_routing.py -v &&
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --customer-routed-xbt --auto-process &&
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --customer-routed-xbt --auto-process --fail-outgoing
+```
+
+See `REMOTE-RECEIVER.md` for the customer fee-cap semantics. These regtests
+use isolated nodes and the fixed market fixture; no live configuration changes.

@@ -36,7 +36,11 @@ class ServiceLab(Lab):
         return super().start(args, logfile, new_session)
 
 
-def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_xbt=False, second_payer=False):
+def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_xbt=False, second_payer=False, routed_xbt=False, customer_routed_xbt=False):
+    if customer_routed_xbt:
+        routed_xbt = True
+    if routed_xbt:
+        any_xbt = True
     if LIVE_EXECUTION_ENABLED:
         raise RuntimeError('expected live reverse activation to remain disabled')
     private_hint = True
@@ -56,11 +60,15 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
     if second_payer:
         payer = payers[1]
     incoming = lab.lightning('xbt-operator', 'xbt-regtest', xbt, plugins=(gate,))
+    xbt_relay = lab.lightning('xbt-relay', 'xbt-regtest', xbt) if routed_xbt else None
+    incoming_peer = xbt_relay if routed_xbt else payer
+    payer_peer = xbt_relay if routed_xbt else incoming
     outgoing = lab.lightning('btc-operator', 'regtest', btc)
     relay = lab.lightning('btc-relay', 'regtest', btc)
     receiver = lab.lightning('btc-receiver', 'regtest', btc, plugins=(hold,))
-    nodes = (*payers, incoming, outgoing, relay, receiver)
-    btc_nodes, xbt_nodes = (outgoing, relay, receiver), (*payers, incoming)
+    xbt_nodes = (*payers, incoming, *([xbt_relay] if routed_xbt else []))
+    btc_nodes = (outgoing, relay, receiver)
+    nodes = (*xbt_nodes, *btc_nodes)
 
     def rpc(node, *args):
         return lab.rpc(node['cli'], *args)
@@ -93,7 +101,15 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
             wait_until(lambda: channel(left, right)['state'] == 'CHANNELD_NORMAL', left['proc'])
 
     for p in payers:
-        fund(xbt, p, incoming)
+        fund(xbt, p, xbt_relay if routed_xbt and p is payer else incoming)
+    if routed_xbt:
+        fund(xbt, xbt_relay, incoming)
+        rpc(xbt_relay, 'setchannel', channel(xbt_relay, incoming)['short_channel_id'], '5000msat', 0)
+        wait_until(lambda: channel(incoming, xbt_relay).get('updates', {}).get('remote', {}).get('fee_base_msat') == 5000
+                   and channel(incoming, xbt_relay)['updates']['remote']['fee_proportional_millionths'] == 0, incoming['proc'])
+        assert not any(c['peer_id'] == incoming['id'] for c in rpc(payer,'listpeerchannels')['channels'])
+        assert not any(c['peer_id'] == payer['id'] for c in rpc(incoming,'listpeerchannels')['channels'])
+        print('PASS: XBT payer has no direct coordinator channel; intermediate XBT relay charges 5 sats',flush=True)
     fund(btc, outgoing, relay)
     fund(btc, relay, receiver, private=private_hint)
     rpc(relay, 'setchannel', channel(relay, receiver)['short_channel_id'], '5000msat', 0)
@@ -194,15 +210,27 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
     pay_log = lab.root/'service-xbt-pay.log'
     offer_path = request_dir/'offer.json'
     customer_dir = lab.root/'customer-payment'
-    customer.review(json.loads(offer_path.read_text()), invoice['bolt11'], payer['cli'],
-                    customer_dir, 500000, rpc=lab.rpc, network='xbt-regtest')
-    client = lab.root/'customer-pay.py'
-    client.write_text('import sys,json\nfrom pathlib import Path\n'+
-        f'sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n'+
-        'from reverse_customer import pay\n'+
-        f'print(json.dumps(pay(Path({str(customer_dir)!r}))))\n')
-    paying = lab.start([sys.executable, str(client)], pay_log)
-    print('PASS: customer reviewed minimal offer and submitted using its own wallet only', flush=True)
+    if routed_xbt:
+        from routed_xbt_regtest import wait_for_route, receipt as routed_receipt
+        wait_for_route(lab, payer, xbt_relay, incoming, terms)
+    if routed_xbt and not customer_routed_xbt:
+        paying = lab.start([*payer['cli'], '-k', 'pay', 'bolt11='+quote['xbt_invoice'],
+                            'maxfee=10000msat', 'maxdelay=2016', 'retry_for=0'], pay_log)
+        print('PASS: ordinary XBT pay uses a two-hop route; customer helper direct-channel restriction is not relaxed',flush=True)
+    else:
+        customer.review(json.loads(offer_path.read_text()), invoice['bolt11'], payer['cli'],
+                        customer_dir, 500000, rpc=lab.rpc, network='xbt-regtest',
+                        **({'max_xbt_routing_fee_sats': 10} if customer_routed_xbt else {}))
+        client = lab.root/'customer-pay.py'
+        client.write_text('import sys,json\nfrom pathlib import Path\n'+
+            f'sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n'+
+            'from reverse_customer import pay\n'+
+            f'print(json.dumps(pay(Path({str(customer_dir)!r}))))\n')
+        paying = lab.start([sys.executable, str(client)], pay_log)
+        print('PASS: customer reviewed minimal offer and submitted using its own wallet only', flush=True)
+        if customer_routed_xbt:
+            assert json.loads((customer_dir/'customer.json').read_text())['max_xbt_routing_fee_sats'] == 10
+            print('PASS: customer helper pinned 10-sat XBT routing cap; no direct coordinator channel required',flush=True)
     payment_hash = terms['payment_hash']
 
     def committed(node, peer, direction):
@@ -210,8 +238,8 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
         return any(h['payment_hash'] == payment_hash and h['direction'] == direction
                    and h['state'] == wanted for h in channel(node, peer).get('htlcs', []))
     wait_until(lambda: rpc(incoming, 'reverse-status', payment_hash)['hook_ready'], incoming['proc'])
-    wait_until(lambda: committed(incoming, payer, 'in'), incoming['proc'])
-    wait_until(lambda: committed(payer, incoming, 'out'), payer['proc'])
+    wait_until(lambda: committed(incoming, incoming_peer, 'in'), incoming['proc'])
+    wait_until(lambda: committed(payer, payer_peer, 'out'), payer['proc'])
     state_path = directory/'reverse-state.json'
     command = [sys.executable, str(Path(__file__).with_name('reverse_service.py'))]
 
@@ -277,9 +305,9 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
         attempt_id = tuple(attempts[0].get(k) for k in ('id', 'groupid', 'partid'))
         if any_xbt:
             pin = checkpoint['incoming_channel']
-            assert pin['peer_id'] == payer['id']
-            assert pin['funding_txid'] == channel(incoming,payer)['funding_txid']
-            assert checkpoint['xbt_binding'][0] == channel(incoming,payer)['short_channel_id']
+            assert pin['peer_id'] == incoming_peer['id']
+            assert pin['funding_txid'] == channel(incoming,incoming_peer)['funding_txid']
+            assert checkpoint['xbt_binding'][0] == channel(incoming,incoming_peer)['short_channel_id']
         gate_before = (lab.root/'service-gate.json').read_bytes()
         for node in (incoming, outgoing):
             lab.stop(node['proc'])
@@ -292,10 +320,13 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
                 raise AssertionError('operator identity changed on restart')
             node.update(restarted)
         for p in payers:
-            rpc(p, 'connect', incoming['id'], '127.0.0.1', incoming['port'])
+            if not routed_xbt or p is not payer:
+                rpc(p, 'connect', incoming['id'], '127.0.0.1', incoming['port'])
+        if routed_xbt:
+            rpc(xbt_relay, 'connect', incoming['id'], '127.0.0.1', incoming['port'])
         rpc(outgoing, 'connect', relay['id'], '127.0.0.1', relay['port'])
         wait_until(lambda: rpc(incoming, 'reverse-status', payment_hash)['hook_ready'], incoming['proc'])
-        wait_until(lambda: committed(incoming, payer, 'in'), incoming['proc'])
+        wait_until(lambda: committed(incoming, incoming_peer, 'in'), incoming['proc'])
         wait_until(lambda: committed(outgoing, relay, 'out'), outgoing['proc'])
         if (lab.root/'service-gate.json').read_bytes() != gate_before:
             raise AssertionError('gate replay changed immutable quote or binding')
@@ -320,23 +351,32 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
 
     failed = fail_outgoing or abort_unspent
     paying.wait(timeout=40)
-    if paying.returncode:
-        raise AssertionError('customer command failed')
-    customer_state = json.loads((customer_dir/'customer.json').read_text())
-    wait_until(lambda: customer.result(customer_state, rpc=lab.rpc)['outcome'] == ('failed' if failed else 'complete'), payer['proc'])
-    receipt = customer.result(customer_state, rpc=lab.rpc)
-    if receipt['outcome'] != ('failed' if failed else 'complete'):
-        raise AssertionError('wrong customer outcome')
-    if customer.pay(customer_dir, rpc=lab.rpc) != receipt:
-        raise AssertionError('repeated customer pay did not reconcile the original outcome')
+    if routed_xbt and not customer_routed_xbt:
+        assert (paying.returncode != 0) == failed
+        rows = rpc(payer, 'listpays', quote['xbt_invoice'])['pays']
+        receipt = routed_receipt(rows, quote, incoming['id'], failed=failed)
+        assert routed_receipt(rpc(payer, 'listpays', quote['xbt_invoice'])['pays'],
+                              quote, incoming['id'], failed=failed) == receipt
+    else:
+        if paying.returncode:
+            raise AssertionError('customer command failed')
+        customer_state = json.loads((customer_dir/'customer.json').read_text())
+        wait_until(lambda: customer.result(customer_state, rpc=lab.rpc)['outcome'] == ('failed' if failed else 'complete'), payer['proc'])
+        receipt = customer.result(customer_state, rpc=lab.rpc)
+        if receipt['outcome'] != ('failed' if failed else 'complete'):
+            raise AssertionError('wrong customer outcome')
+        if customer.pay(customer_dir, rpc=lab.rpc) != receipt:
+            raise AssertionError('repeated customer pay did not reconcile the original outcome')
     deltas = {key: 0 for key in initial}
     if not failed:
-        for left, right, amount in ((payer, incoming, terms['xbt_amount_msat']),
-                                    (outgoing, relay, 1505000), (relay, receiver, 1500000)):
+        incoming_legs = ([(payer, xbt_relay, terms['xbt_amount_msat']+5000),
+                          (xbt_relay, incoming, terms['xbt_amount_msat'])] if routed_xbt else
+                         [(payer, incoming, terms['xbt_amount_msat'])])
+        for left, right, amount in [*incoming_legs, (outgoing, relay, 1505000), (relay, receiver, 1500000)]:
             scid = channel(left, right)['short_channel_id']
             deltas[(left['id'], scid)] -= amount
             deltas[(right['id'], scid)] += amount
-        if receipt['xbt_sent_sats']*1000 != terms['xbt_amount_msat'] or not receipt['matching_preimage_verified']:
+        if receipt['xbt_sent_sats']*1000 != terms['xbt_amount_msat']+(5000 if routed_xbt else 0) or not receipt['matching_preimage_verified']:
             raise AssertionError('payer receipt differs from service quote')
     for node in nodes:
         def settled():
@@ -353,7 +393,13 @@ def run(lab, fail_outgoing=False, abort_unspent=False, auto_process=False, any_x
     print('PASS: all channel-side balances and invoice outcomes verified; no pending HTLCs', flush=True)
     if any_xbt:
         final_state = json.loads(state_path.read_text())
-        assert final_state['incoming_channel']['peer_id'] == payer['id']
+        assert final_state['incoming_channel']['peer_id'] == incoming_peer['id']
+        if routed_xbt:
+            assert final_state['incoming_channel']['peer_id'] != payer['id']
+            gain = sum(c['to_us_msat']-initial[(xbt_relay['id'],c['short_channel_id'])]
+                       for c in rpc(xbt_relay,'listpeerchannels')['channels'])
+            assert gain == (0 if failed else 5000)
+            print('PASS: coordinator pinned relay-facing HTLC; XBT relay earned '+str(gain//1000)+' sats; payer remained unbound',flush=True)
         print('PASS: unbound reverse quote used payer '+('2' if second_payer else '1')+
               '; original incoming pin retained; unused XBT channel balance unchanged',flush=True)
     mode = 'unspent cancellation' if abort_unspent else 'BTC rejection' if failed else 'success'
@@ -370,10 +416,17 @@ def main():
     parser.add_argument('--auto-process', action='store_true')
     parser.add_argument('--any-xbt', action='store_true')
     parser.add_argument('--second-payer', action='store_true')
+    parser.add_argument('--customer-routed-xbt', action='store_true',
+                        help='Use customer review/pay/recovery over the routed XBT fixture.')
+    parser.add_argument('--routed-xbt', action='store_true', help='Ordinary XBT pay through an intermediate relay; implies --any-xbt.')
     parser.add_argument('--work-dir', type=Path)
     args = parser.parse_args()
     if args.auto_process and args.abort_unspent:
         parser.error('auto-process cancellation is covered by authorization unit tests')
+    if args.customer_routed_xbt:
+        args.routed_xbt = True
+    if args.routed_xbt:
+        args.any_xbt = True
     if args.second_payer and not args.any_xbt:
         parser.error('--second-payer requires --any-xbt')
     temp = None
@@ -386,7 +439,7 @@ def main():
     lab = ServiceLab(root, str(args.bitcoind.resolve()), str(args.bitcoin_cli.resolve()))
     print(f'Test directory: {root}', flush=True)
     try:
-        run(lab, args.fail_outgoing, args.abort_unspent, args.auto_process, args.any_xbt, args.second_payer)
+        run(lab, args.fail_outgoing, args.abort_unspent, args.auto_process, args.any_xbt, args.second_payer, args.routed_xbt, args.customer_routed_xbt)
     finally:
         lab.close()
         if temp:

@@ -47,8 +47,27 @@ def export(directory, output):
                 expires_at=value['expires_at'], payment_started=False)
 
 
+def routing_budget(max_xbt_sats, max_xbt_routing_fee_sats):
+    """None preserves legacy direct-only mode; explicit zero permits free routing."""
+    if (type(max_xbt_sats) is not int or not 0 < max_xbt_sats <= 500000
+            or (max_xbt_routing_fee_sats is not None
+                and (type(max_xbt_routing_fee_sats) is not int
+                     or not 0 <= max_xbt_routing_fee_sats <= 1000
+                     or max_xbt_routing_fee_sats >= max_xbt_sats))):
+        raise ValueError('invalid customer routing budget')
+    return 0 if max_xbt_routing_fee_sats is None else max_xbt_routing_fee_sats
+
+
+def fee_summary(offer, fee):
+    if fee is None:
+        return {}
+    return dict(max_xbt_routing_fee_sats=fee,
+                max_total_xbt_sats=offer['xbt_sats']+fee)
+
+
 def validate(offer, invoice, cli, max_xbt_sats, max_delay, rpc=RPC.call, now=time.time,
-             network='xbt'):
+             network='xbt', max_xbt_routing_fee_sats=None):
+    fee = routing_budget(max_xbt_sats, max_xbt_routing_fee_sats)
     if network not in ('xbt', 'xbt-regtest'):
         raise ValueError('unsupported customer network')
     if (set(offer) != FIELDS or offer['format'] != FORMAT
@@ -58,6 +77,7 @@ def validate(offer, invoice, cli, max_xbt_sats, max_delay, rpc=RPC.call, now=tim
             or type(max_delay) is not int or not 1 <= max_delay <= 2016
             or type(offer['btc_sats']) is not int or offer['btc_sats'] != 1500
             or type(offer['xbt_sats']) is not int or not 0 < offer['xbt_sats'] <= max_xbt_sats
+            or offer['xbt_sats'] + fee > max_xbt_sats
             or type(offer['expires_at']) is not int or offer['expires_at'] <= int(now())):
         raise ValueError('customer quote outside approved limits or expired')
     info = rpc(cli, 'getinfo')
@@ -80,23 +100,35 @@ def validate(offer, invoice, cli, max_xbt_sats, max_delay, rpc=RPC.call, now=tim
             or type(xbt.get('min_final_cltv_expiry')) is not int
             or not 0 < xbt['min_final_cltv_expiry'] <= max_delay):
         raise ValueError('invoice hash, recipient or locktime mismatch')
-    channels = [c for c in rpc(cli, 'listpeerchannels')['channels']
-                if c.get('peer_id') == xbt['payee'] and c.get('state') == 'CHANNELD_NORMAL']
-    if (len(channels) != 1 or channels[0].get('peer_connected') is not True
-            or channels[0].get('htlcs') or channels[0].get('spendable_msat', 0) < offer['xbt_sats']*1000):
-        raise ValueError('customer needs one ready direct channel with sufficient balance')
+    channels = rpc(cli, 'listpeerchannels')['channels']
+    if max_xbt_routing_fee_sats is None:
+        channels = [c for c in channels if c.get('peer_id') == xbt['payee']
+                    and c.get('state') == 'CHANNELD_NORMAL']
+        if (len(channels) != 1 or channels[0].get('peer_connected') is not True
+                or channels[0].get('htlcs') or channels[0].get('spendable_msat', 0) < offer['xbt_sats']*1000):
+            raise ValueError('customer needs one ready direct channel with sufficient balance')
+    elif not any(c.get('state') == 'CHANNELD_NORMAL' and c.get('peer_connected') is True
+                 and not c.get('htlcs') and type(c.get('spendable_msat')) is int
+                 and c['spendable_msat'] >= (offer['xbt_sats']+fee)*1000 for c in channels):
+        raise ValueError('customer needs a ready first-hop channel covering amount and fee cap')
+    # This is a local liquidity check, not a promise of a route. The wallet's
+    # pay command plans the route and enforces the persisted fee/delay limits.
     return dict(customer_id=info['id'], operator_id=xbt['payee'], payment_hash=xbt['payment_hash'],
                 final_cltv=xbt['min_final_cltv_expiry'])
 
 
 def review(offer, invoice, cli, directory, max_xbt_sats, max_delay=2016, rpc=RPC.call,
-           now=time.time, network='xbt'):
-    checked = validate(offer, invoice, cli, max_xbt_sats, max_delay, rpc, now, network)
+           now=time.time, network='xbt', max_xbt_routing_fee_sats=None):
+    checked = validate(offer, invoice, cli, max_xbt_sats, max_delay, rpc, now, network,
+                       max_xbt_routing_fee_sats)
     directory.mkdir(mode=0o700)  # Exclusive: never replace an existing customer intent.
+    options = ({} if max_xbt_routing_fee_sats is None else
+               dict(max_xbt_routing_fee_sats=max_xbt_routing_fee_sats))
     save(directory/'customer.json', dict(phase='reviewed', offer=offer, btc_invoice=invoice,
-         cli=cli, network=network, max_xbt_sats=max_xbt_sats, max_delay=max_delay, **checked))
+         cli=cli, network=network, max_xbt_sats=max_xbt_sats, max_delay=max_delay, **options, **checked))
     return dict(reviewed=True, btc_sats=offer['btc_sats'], xbt_sats=offer['xbt_sats'],
-                final_cltv=checked['final_cltv'], expires_at=offer['expires_at'], payment_started=False)
+                final_cltv=checked['final_cltv'], expires_at=offer['expires_at'], payment_started=False,
+                **fee_summary(offer, max_xbt_routing_fee_sats))
 
 
 @contextmanager
@@ -120,6 +152,7 @@ def payment_rows(state, rpc):
 
 
 def result(state, rpc=RPC.call):
+    fee = routing_budget(state['max_xbt_sats'], state.get('max_xbt_routing_fee_sats'))
     rows = payment_rows(state, rpc)
     if not rows:
         return dict(outcome='not_submitted' if state['phase'] == 'reviewed' else 'unknown',
@@ -137,10 +170,15 @@ def result(state, rpc=RPC.call):
         preimage = bytes.fromhex(row['preimage'])
         if (len(preimage) != 32 or hashlib.sha256(preimage).hexdigest() != state['payment_hash']
                 or row.get('amount_msat') != state['offer']['xbt_sats']*1000
-                or row.get('amount_sent_msat') != row['amount_msat']):
+                or type(row.get('amount_sent_msat')) is not int
+                or not row['amount_msat'] <= row['amount_sent_msat'] <= row['amount_msat']+fee*1000
+                or row['amount_sent_msat'] > state['max_xbt_sats']*1000):
             raise ValueError('customer payment proof or amount differs')
         answer.update(btc_invoice_sats=state['offer']['btc_sats'], xbt_sent_sats=row['amount_sent_msat']//1000,
                       matching_preimage_verified=True)
+        if state.get('max_xbt_routing_fee_sats') is not None:
+            answer.update(xbt_sent_msat=row['amount_sent_msat'],
+                          xbt_routing_fee_msat=row['amount_sent_msat']-row['amount_msat'])
     return answer
 
 
@@ -153,14 +191,15 @@ def pay(directory, rpc=RPC.call, now=time.time):
         if state['phase'] != 'reviewed':
             raise ValueError('unexpected customer state')
         checked = validate(state['offer'], state['btc_invoice'], state['cli'], state['max_xbt_sats'],
-                           state['max_delay'], rpc, now, state['network'])
+                           state['max_delay'], rpc, now, state['network'], state.get('max_xbt_routing_fee_sats'))
         if any(state[k] != value for k, value in checked.items()) or payment_rows(state, rpc):
             raise ValueError('review binding changed or payment already recorded')
+        fee = routing_budget(state['max_xbt_sats'], state.get('max_xbt_routing_fee_sats'))
         state['phase'] = 'submitted'
         save(path, state)  # Submission intent is durable BEFORE the pay RPC.
         try:
             rpc([*state['cli'], '-k'], 'pay', 'bolt11='+state['offer']['xbt_invoice'],
-                'maxfee=0msat', 'maxdelay='+str(state['max_delay']), 'retry_for=0')
+                'maxfee='+str(fee*1000)+'msat', 'maxdelay='+str(state['max_delay']), 'retry_for=0')
         except Exception:
             pass  # Lost replies are reconciled by reads, never by another submission.
         return result(state, rpc)
@@ -175,6 +214,8 @@ def main():
     p.add_argument('--lightning-dir', type=Path, required=True)
     p.add_argument('--max-xbt-sats', type=int, required=True)
     p.add_argument('--max-delay', type=int, default=2016)
+    p.add_argument('--max-xbt-routing-fee-sats', type=int, default=None,
+                   help='Opt into routing; fee cap included in --max-xbt-sats (0..1000).')
     p.add_argument('--directory', type=Path, required=True)
     for name in ('pay', 'status'):
         p = sub.add_parser(name)
@@ -191,7 +232,8 @@ def main():
                    '--lightning-dir='+str(args.lightning_dir.expanduser().resolve()),
                    '--network=xbt', '--json', '--notifications=none']
             answer = review(private_load(path), private_invoice(args.btc_invoice_file.expanduser()),
-                            cli, directory, args.max_xbt_sats, args.max_delay)
+                            cli, directory, args.max_xbt_sats, args.max_delay,
+                            max_xbt_routing_fee_sats=args.max_xbt_routing_fee_sats)
         elif args.command == 'pay':
             answer = pay(directory)
         else:

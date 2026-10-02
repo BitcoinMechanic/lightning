@@ -391,3 +391,38 @@ adapter; gate, wallet, worker and controller operations use real test nodes.
 
 The regression catalog includes `unit-incoming-btc`, `receive-any-btc-success`
 and `receive-any-btc-fail-second` (110 total cases).
+
+
+### Customer XBT routing fee cap
+
+For a new **send** attempt, `customer.py send`, `customer_swap.py`, and
+`reverse_customer.py review` accept `--max-xbt-routing-fee-sats N` (0 through
+1000). Supplying this option permits the customer's wallet to route its XBT
+payment through intermediaries. Omitting it preserves the existing direct,
+zero-fee policy; explicitly supplying zero permits only free routes.
+
+`--max-xbt-sats` caps the total XBT amount, including the routing allowance.
+For example, a 350000-sat quote with a 10-sat fee cap requires a total cap of
+at least 350010 sats. The review shows the quoted XBT amount, routing-fee cap,
+and maximum total before asking for `PAY`. This XBT fee allowance is separate
+from the coordinator's BTC routing budget, which is priced into the quote.
+
+The customer checks for a connected, normal first-hop channel with enough
+spendable balance for the quote plus the full fee allowance. This does not
+promise an end-to-end route. CLN `pay` chooses the route and enforces the saved
+fee and delay caps. The service's existing single-HTLC admission rules remain
+in effect; this change does not add multipath swap admission.
+
+The routing allowance is saved with the wallet payment intent and, for the
+unified command, with the managed attempt. Resume uses the original limits;
+an existing reviewed or submitted attempt cannot be upgraded by passing a
+larger cap. Submitted attempts only query payment status, even after a lost
+reply, a failed payment, or a missing payment record.
+
+Routed completion reports include exact `xbt_sent_msat` and
+`xbt_routing_fee_msat`, and verify the preimage and both spending limits.
+The legacy `xbt_sent_sats` field remains rounded down to whole sats; use the
+millisatoshi fields for exact accounting of fractional-sat routing fees.
+
+This option changes customer payment policy only. It does not migrate the
+operator's live admission policy or change its authentication configuration.

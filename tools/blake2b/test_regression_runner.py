@@ -89,7 +89,17 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 60)
+        self.assertEqual(sum(c.live for c in catalog), 64)
+        customers = [c for c in catalog if c.name.startswith('reverse-customer-routed-xbt-')]
+        self.assertEqual(len(customers), 2)
+        for case in customers:
+            self.assertIn('--customer-routed-xbt', case.command)
+            self.assertIn('--auto-process', case.command)
+        routed = [c for c in catalog if c.name.startswith('reverse-routed-xbt-')]
+        self.assertEqual(len(routed), 2)
+        for case in routed:
+            self.assertIn('--routed-xbt', case.command)
+            self.assertIn('--auto-process', case.command)
 
     def test_exit_codes_and_missing_executable(self):
         with tempfile.TemporaryDirectory() as directory:

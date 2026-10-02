@@ -13,7 +13,7 @@ import customer_swap
 from customer_errors import CustomerError
 from quote_refusal import QuoteRefused
 from reverse_check import private_invoice
-from reverse_customer import locked, result
+from reverse_customer import locked, result, routing_budget
 from service_manager import private_load
 from swap_controller import save
 from swap_rpc import RPC
@@ -68,7 +68,9 @@ def execute(directory, intent, rpc, emit, confirm, retry):
         return customer_swap.workflow(
             intent['invoice'], intent['cli'], work, Path(intent['token_file']),
             intent['url'], intent['max_xbt_sats'], intent['max_delay'],
-            confirm=confirm, emit=emit, retry_quote=retry)
+            confirm=confirm, emit=emit, retry_quote=retry,
+            **({'max_xbt_routing_fee_sats': intent['max_xbt_routing_fee_sats']}
+               if 'max_xbt_routing_fee_sats' in intent else {}))
     if intent['direction'] != 'receive':
         raise ValueError('unknown direction')
     return customer_receive.workflow(
@@ -155,6 +157,8 @@ def main(argv=None):
             s.add_argument('--invoice-file', type=Path, required=True)
             s.add_argument('--max-xbt-sats', type=int, required=True)
             s.add_argument('--max-delay', type=int, default=2016)
+            s.add_argument('--max-xbt-routing-fee-sats', type=int, default=None,
+                           help='Opt into routing; fee cap included in --max-xbt-sats (0..1000).')
         else:
             s.add_argument('name', help='Unique short name; repeat it to reuse the same invoice.')
             s.add_argument('--xbt-sats', type=int, required=True)
@@ -186,6 +190,9 @@ def main(argv=None):
                 invoice = private_invoice(a.invoice_file.expanduser())
                 if not 0 < a.max_xbt_sats <= 500000 or not 0 < a.max_delay <= 2016:
                     raise ValueError('invalid send limits')
+                routing_budget(a.max_xbt_sats, a.max_xbt_routing_fee_sats)
+                if a.max_xbt_routing_fee_sats is not None:
+                    intent['max_xbt_routing_fee_sats'] = a.max_xbt_routing_fee_sats
                 intent.update(id='send-'+hashlib.sha256(invoice.encode()).hexdigest(),
                               invoice=invoice, max_xbt_sats=a.max_xbt_sats, max_delay=a.max_delay)
             else:
