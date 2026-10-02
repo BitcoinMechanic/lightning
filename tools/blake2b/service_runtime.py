@@ -28,6 +28,10 @@ def node_command(settings, directory, role):
     if kind == 'btc':
         args = [str(tools/'live_btc_node.py'), '--lightning-dir='+str(root),
                 '--listen-host='+values['BTC_LN_HOST'], '--listen-port=19735', '--market-swaps']
+        if settings.get('receive_policy', {}).get('profile') == 'live-routed-receive-v1':
+            from receive_activation import launcher_profile
+            launcher_profile(directory/'settings.json', root)
+            args.append('--routed-receive-settings='+str(directory/'settings.json'))
     else:
         args = [str(tools/'live_node.py'), '--lightning-dir='+str(root),
                 '--bitcoin-cli='+settings['bitcoin_cli'],

@@ -769,3 +769,35 @@ require renewed authorization.
 including a real authenticated loopback HTTP request and background worker.
 It does not spend live funds. The funded bounded regtest and deadline cases
 remain the chain-level integration checks.
+
+
+### Activate the live routed receive policy
+
+`receive_activation.py check` is read-only and does not query the market or
+plan a particular invoice route. Defaults are a 1,650-sat BTC cap, a
+500,000-sat XBT cap including the full 10-sat routing allowance, 100 basis
+points margin, and a 288-block outgoing route-delay cap. Explicit alternatives
+are available through `--max-btc-sats`, `--max-xbt-sats`,
+`--max-xbt-routing-fee-sats`, `--margin-bps`, and `--max-delay`.
+
+Keep both operator nodes running for checks. Stop the quote API and recovery
+worker before `install`. Installation requires clear connected channels,
+operator reserves, no held hooks or pending HTLCs, and terminal historical
+swaps (or expired, unstarted quotes). It preserves an exact private old/new
+settings record in `routed-receive-activation.json` and can resume an interrupted
+settings replacement. Changing the requested limits during a retry is refused.
+The previous receiving configuration is replaced; reverse activation, API
+credentials, wallets, quote databases, and historical files are preserved.
+
+After successful installation, restart `cln-btc-operator.service`. Its existing
+runtime passes the settings path explicitly to the BTC launcher, which verifies
+the policy and original BTC root before selecting the new quote-gate profile.
+Do not restart XBT or customer nodes for this change. Wait for
+`receive_activation.py status` to report gate readiness, then start the quote
+API and recovery worker. If installation fails, leave those two services
+stopped and inspect the reported reason; do not delete the activation record.
+
+A successful status check confirms operator identity and gate profile, not
+route availability or a price for any specific invoice. Existing published
+quotes keep their original contents. Use a new customer receive request for
+this profile. The installer neither creates an invoice nor starts a payment.

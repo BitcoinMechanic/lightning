@@ -53,12 +53,18 @@ def main():
                         help='Persistently enable the one-quote BTC-to-XBT pilot gate')
     parser.add_argument('--market-swaps', action='store_true',
                         help='Persistently enable bounded oracle-priced swaps')
+    parser.add_argument('--routed-receive-settings', type=Path,
+                        help='Explicit identity-bound routed receiving policy')
     args = parser.parse_args()
     try:
         peers = peer_options(args.listen_host, args.listen_port)
     except ValueError:
         parser.error('listener requires a private LAN IPv4 address and port 1024..65535')
     root = args.lightning_dir.expanduser().resolve()
+    routed_profile = None
+    if args.routed_receive_settings is not None:
+        from receive_activation import launcher_profile
+        routed_profile = launcher_profile(args.routed_receive_settings, root)
     marker = root / 'btc-https-observer-v1'
     if root.exists() and not marker.is_file():
         parser.error('choose a new dedicated BTC directory')
@@ -87,13 +93,13 @@ def main():
     market_marker = root / 'market-swaps-v1'
     if args.market_swaps:
         market_marker.touch(mode=0o600)
-    if args.live_pilot or gate.exists() or market_marker.exists():
+    if args.live_pilot or gate.exists() or market_marker.exists() or routed_profile:
         temporary = root / 'live-swap-gate.tmp'
         temporary.write_text('#!' + sys.executable + '\n' +
                              source.with_name('quote_plugin.py').read_text())
         temporary.chmod(0o700)
         temporary.replace(gate)
-        profile = 'live-market-v1' if market_marker.exists() else 'live-pilot-v2'
+        profile = routed_profile or ('live-market-v1' if market_marker.exists() else 'live-pilot-v2')
         command.extend(['--plugin=' + str(gate), '--xbt-live-pilot=' + profile])
     mode = 'offline' if args.listen_host is None else 'LAN listener'
     print('BTC backend verified; starting BTC node (' + mode + ').', flush=True)
