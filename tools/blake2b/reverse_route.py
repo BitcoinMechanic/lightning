@@ -24,10 +24,14 @@ def limits(policy, *, _prefix=False, _inspection=False):
         raise ValueError('invalid reverse route endpoints or delay bounds')
 
 
-def validate(route, amount_msat, policy, *, _prefix=False, _inspection=False):
+def validate(route, amount_msat, policy, *, _prefix=False, _inspection=False, _xbt_inspection=False):
     limits(policy, _prefix=_prefix, _inspection=_inspection)
+    if _xbt_inspection and not _inspection:
+        raise ValueError('XBT amount bounds require read-only inspection')
     minimum = 1000 if _inspection else 100000000
     maximum = (10100000 if _prefix else 10000000) if _inspection else (100010000 if _prefix else 100000000)
+    if _xbt_inspection:
+        maximum = 500100000 if _prefix else 500000000
     if type(amount_msat) is not int or not minimum <= amount_msat <= maximum:
         raise ValueError('unsupported reverse routed fixture amount')
     if not isinstance(route, list) or not 1 <= len(route) <= policy['max_hops']:
@@ -59,7 +63,7 @@ def validate(route, amount_msat, policy, *, _prefix=False, _inspection=False):
     return fee
 
 
-def convert(result, amount_msat, policy, *, _prefix=False, _inspection=False):
+def convert(result, amount_msat, policy, *, _prefix=False, _inspection=False, _xbt_inspection=False):
     limits(policy, _prefix=_prefix, _inspection=_inspection)
     routes = result['routes']
     if len(routes) != 1:
@@ -92,7 +96,7 @@ def convert(result, amount_msat, policy, *, _prefix=False, _inspection=False):
         route.append(dict(id=hop['node_id_out'], channel=channel,
                           amount_msat=hop['amount_out_msat'], delay=hop['cltv_out']))
         previous = hop
-    validate(route, amount_msat, policy, _prefix=_prefix, _inspection=_inspection)
+    validate(route, amount_msat, policy, _prefix=_prefix, _inspection=_inspection, _xbt_inspection=_xbt_inspection)
     return route
 
 
@@ -182,11 +186,13 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4
                            _inspection=_inspection)
 
 
-def plan_with_hints(cli, amount, policy, hints, rpc, *, _inspection=False):
+def plan_with_hints(cli, amount, policy, hints, rpc, *, _inspection=False, _xbt_inspection=False):
     """Currency-independent route assembly; caller validates the signed invoice."""
     limits(policy, _inspection=_inspection)
     max_fee_msat, max_delay, max_hops = (policy[k] for k in ('max_fee_msat', 'max_delay', 'max_hops'))
     source = policy['source']
+    if _xbt_inspection and not _inspection:
+        raise ValueError('XBT amount bounds require read-only inspection')
     if not isinstance(hints, list) or len(hints) > 8:
         raise ValueError('too many or malformed reverse invoice hints')
     try:
@@ -196,7 +202,7 @@ def plan_with_hints(cli, amount, policy, hints, rpc, *, _inspection=False):
             raise
         unavailable = error
     else:
-        return convert(result, amount, policy, _inspection=_inspection), policy
+        return convert(result, amount, policy, _inspection=_inspection, _xbt_inspection=_xbt_inspection), policy
     # Hints are alternative tails, not a reason to mutate public gossip or
     # create shared askrene layers. Try at most eight; choose the first fit.
     for hint in hints:
@@ -219,10 +225,10 @@ def plan_with_hints(cli, amount, policy, hints, rpc, *, _inspection=False):
                 if not bounded_route_failure(error, _inspection=_inspection):
                     raise
                 continue
-            prefix = convert(result, entry_amount, prefix_policy, _prefix=True, _inspection=_inspection)
+            prefix = convert(result, entry_amount, prefix_policy, _prefix=True, _inspection=_inspection, _xbt_inspection=_xbt_inspection)
         route = prefix + tail
         try:
-            validate(route, amount, policy, _inspection=_inspection)
+            validate(route, amount, policy, _inspection=_inspection, _xbt_inspection=_xbt_inspection)
         except ValueError:
             continue  # A public prefix can intersect the private tail.
         return route, policy

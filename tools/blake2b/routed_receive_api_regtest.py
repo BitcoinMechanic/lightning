@@ -16,9 +16,9 @@ import routed_receive_service as service
 
 
 class Workflow:
-    def __init__(self, lab, incoming, outgoing, invoice):
+    def __init__(self, lab, incoming, outgoing, invoice, bounded=False):
         self.lab = lab
-        self.config = dict(profile=service.PROFILE, btc_cli=incoming['cli'], xbt_cli=outgoing['cli'],
+        self.config = dict(profile=service.bounds.PROFILE if bounded else service.PROFILE, btc_cli=incoming['cli'], xbt_cli=outgoing['cli'],
                            market=dict(max_btc_sats=2000, max_xbt_sats=100010, margin_bps=0),
                            max_xbt_routing_fee_msat=10000)
         self.settings = dict(receive_policy=self.config, btc_cli=incoming['cli'], xbt_cli=outgoing['cli'],
@@ -58,6 +58,11 @@ class Workflow:
             assert self.quote['controller']['route'][0]['amount_msat'] == 100005000
             decoded = lab.rpc(incoming['cli'], 'decode', self.offer['btc_invoice'])
             assert decoded['currency'] == 'bcrt' and decoded['amount_msat'] == 1501000
+            if bounded:
+                timing = self.quote['controller']['xbt_timing']
+                assert decoded['min_final_cltv_expiry'] == timing['proposed_btc_invoice_cltv']
+                assert self.quote['terms']['min_cltv_delta'] == timing['minimum_btc_remaining_blocks']
+                print('PASS: candidate timing pinned in signed BTC invoice; reserves and remote XBT policies checked', flush=True)
             assert decoded['payment_hash'] == self.quote['terms']['payment_hash']
             assert self.step_result()['outcome'] == 'waiting_for_btc'
             assert not (self.directory/'state.json').exists()

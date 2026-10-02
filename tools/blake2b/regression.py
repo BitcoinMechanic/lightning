@@ -31,7 +31,7 @@ class Case:
 
 def cases():
     result = [Case('headers', (sys.executable, str(HERE / 'check_headers.py')))]
-    for name in ('xbt_hints', 'routed_receive_service', 'outgoing_xbt', 'customer_routing', 'routed_xbt', 'incoming_xbt', 'incoming_btc', 'receive_selection', 'customer_errors', 'customer_command', 'receive_api', 'customer_receive', 'market_refusal', 'switch_customer', 'operator_status', 'quote_refusal', 'customer_swap', 'quote_api_service', 'reverse_authorize', 'reverse_quote_api', 'reverse_customer', 'separate_customer', 'reverse_operator_only', 'reverse_activation', 'reverse_service_profile', 'reverse_live', 'reverse_timing', 'reverse_check', 'reverse_oracle', 'reverse_deadline', 'reverse_onchain', 'reverse_hints', 'reverse_route', 'reverse_gate', 'reverse_controller', 'reverse_invoice', 'remote_receiver', 'swap_rpc', 'service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
+    for name in ('receive_bounds', 'routed_receive_check', 'xbt_hints', 'routed_receive_service', 'outgoing_xbt', 'customer_routing', 'routed_xbt', 'incoming_xbt', 'incoming_btc', 'receive_selection', 'customer_errors', 'customer_command', 'receive_api', 'customer_receive', 'market_refusal', 'switch_customer', 'operator_status', 'quote_refusal', 'customer_swap', 'quote_api_service', 'reverse_authorize', 'reverse_quote_api', 'reverse_customer', 'separate_customer', 'reverse_operator_only', 'reverse_activation', 'reverse_service_profile', 'reverse_live', 'reverse_timing', 'reverse_check', 'reverse_oracle', 'reverse_deadline', 'reverse_onchain', 'reverse_hints', 'reverse_route', 'reverse_gate', 'reverse_controller', 'reverse_invoice', 'remote_receiver', 'swap_rpc', 'service_manager', 'receive_workflow', 'market_quotes', 'market_check', 'neoxa_oracle', 'quote_plugin', 'quote_replay', 'live_pilot', 'btc_https_cli', 'btc_listener', 'controller_recovery', 'spend_guard', 'controller_lock', 'regression_runner', 'deadline_guard', 'swap_watch', 'swap_service'):
         result.append(Case('unit-' + name.replace('_', '-'),
                            (sys.executable, str(HERE / ('test_' + name + '.py')), '-v')))
     for name in ('run-block_blake2b', 'run-bitcoin_block_from_hex'):
@@ -103,6 +103,10 @@ def cases():
     for mode in ('', 'fail-outgoing'):
         result.append(Case('receive-private-api-' + (mode or 'success'),
                            (sys.executable, str(HERE / 'routed_receive_regtest.py'), '--api', '--private-hint') +
+                           (('--'+mode,) if mode else ()), True))
+    for mode in ('', 'fail-outgoing', 'stale-margin'):
+        result.append(Case('receive-bounded-api-' + (mode or 'success'),
+                           (sys.executable, str(HERE / 'routed_receive_regtest.py'), '--api', '--bounded-policy') +
                            (('--'+mode,) if mode else ()), True))
     for mode in ('onchain-preimage', 'onchain-timeout'):
         result.append(Case('receive-routed-api-' + mode,

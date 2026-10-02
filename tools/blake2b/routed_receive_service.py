@@ -11,6 +11,7 @@ import time
 import incoming_btc
 import neoxa_oracle as oracle
 import outgoing_xbt as routed
+import receive_bounds as bounds
 from service_manager import private_load
 from swap_controller import save
 from swap_invoice import unsigned_invoice
@@ -22,7 +23,7 @@ INVOICE_CLTV = 160
 
 
 def is_config(config):
-    return config.get('profile') == PROFILE
+    return config.get('profile') in (PROFILE, bounds.PROFILE)
 
 
 def validate_config(config):
@@ -86,9 +87,13 @@ def validate_quote(data):
     config, terms, state, audit = (data[k] for k in ('config', 'terms', 'controller', 'oracle'))
     validate_config(config)
     budget = (routed.AMOUNT + config['max_xbt_routing_fee_msat'] + 999) // 1000
+    bounded = config['profile'] == bounds.PROFILE
+    timing = bounds.validate(state) if bounded else None
+    minimum = timing['minimum_btc_remaining_blocks'] if bounded else MIN_CLTV
+    maximum = 2016 if bounded else 2000
     expected = dict(profile='regtest', phase='prepared', quote_gate=True,
                     btc_cli=config['btc_cli'], xbt_cli=config['xbt_cli'], node_ids=data['node_ids'],
-                    btc_node_id=data['node_ids'][0], xbt_routing=routed.MODE,
+                    btc_node_id=data['node_ids'][0], xbt_routing=bounds.MODE if bounded else routed.MODE,
                     btc_channel_policy=incoming_btc.POLICY,
                     payment_hash=terms['payment_hash'], xbt_invoice=terms['xbt_invoice'],
                     xbt_amount_msat=routed.AMOUNT, btc_amount_msat=terms['btc_amount_msat'])
@@ -96,7 +101,7 @@ def validate_quote(data):
             or terms['xbt_amount_msat'] != routed.AMOUNT
             or terms.get('btc_channel_policy') != incoming_btc.POLICY
             or 'btc_channel' in terms or 'btc_channel' in state
-            or terms['min_cltv_delta'] != MIN_CLTV or terms['max_cltv_delta'] != 2000
+            or terms['min_cltv_delta'] != minimum or terms['max_cltv_delta'] != maximum
             or type(audit['btc_sats']) is not int or not 0 < audit['btc_sats'] <= config['market']['max_btc_sats']
             or terms['btc_amount_msat'] != audit['btc_sats'] * 1000
             or audit.get('xbt_sats') != budget or budget > config['market']['max_xbt_sats']
@@ -127,7 +132,7 @@ def preflight(data, rpc=None):
             or decoded['created_at'] + decoded['expiry'] < terms['expires_at'] + 60
             or terms['expires_at'] <= int(time.time())):
         raise ValueError('routed quote invoice or expiry differs')
-    routed.preflight(copy.deepcopy(state), decoded, MIN_CLTV, rpc)
+    routed.preflight(copy.deepcopy(state), decoded, terms['min_cltv_delta'], rpc)
 
 
 def create(config, invoice, btc_sats, directory):
@@ -147,18 +152,23 @@ def create(config, invoice, btc_sats, directory):
                                 max_fee_msat=config['max_xbt_routing_fee_msat'])
     ticker, book = oracle.fetch('ticker'), oracle.fetch('orderbook')
     audit = pricing(config, ticker, book, int(time.time() * 1000))
+    bounded = config['profile'] == bounds.PROFILE
+    timing = bounds.timing(route[0]['delay']) if bounded else None
+    minimum = timing['minimum_btc_remaining_blocks'] if bounded else MIN_CLTV
     terms = dict(payment_hash=decoded['payment_hash'], payment_secret=secrets.token_hex(32),
                  btc_amount_msat=audit['btc_sats'] * 1000, xbt_amount_msat=routed.AMOUNT,
-                 xbt_invoice=invoice, expires_at=expires, min_cltv_delta=MIN_CLTV,
-                 max_cltv_delta=2000, btc_channel_policy=incoming_btc.POLICY)
+                 xbt_invoice=invoice, expires_at=expires, min_cltv_delta=minimum,
+                 max_cltv_delta=2016 if bounded else 2000, btc_channel_policy=incoming_btc.POLICY)
     state = dict(profile='regtest', phase='prepared', quote_gate=True,
                  btc_cli=config['btc_cli'], xbt_cli=config['xbt_cli'], node_ids=ids,
-                 btc_node_id=ids[0], xbt_routing=routed.MODE,
+                 btc_node_id=ids[0], xbt_routing=bounds.MODE if bounded else routed.MODE,
                  btc_channel_policy=incoming_btc.POLICY,
                  payment_hash=decoded['payment_hash'], payment_secret=decoded['payment_secret'],
                  xbt_invoice=invoice, xbt_amount_msat=routed.AMOUNT,
                  btc_amount_msat=terms['btc_amount_msat'], route=route, xbt_route_policy=policy)
-    routed.preflight(state, decoded, MIN_CLTV, RPC.call)
+    if bounded:
+        state['xbt_timing'] = timing
+    routed.preflight(state, decoded, minimum, RPC.call)
     incoming_btc.preflight(config, terms['btc_amount_msat'], RPC.call)
     data = dict(config=copy.deepcopy(config), node_ids=ids, terms=terms, controller=state, oracle=audit)
     validate_quote(data)
@@ -178,13 +188,15 @@ def publish(directory):
     incoming_btc.preflight(data['config'], terms['btc_amount_msat'], RPC.call)
     if RPC.call(cli, 'xbt-register', json.dumps(terms)) != {'registered': True}:
         raise RuntimeError('quote registration failed')
+    final_cltv = (data['controller']['xbt_timing']['proposed_btc_invoice_cltv']
+                  if data['config']['profile'] == bounds.PROFILE else INVOICE_CLTV)
     unsigned = unsigned_invoice(terms['payment_hash'], terms['payment_secret'], terms['btc_amount_msat'],
-                                terms['expires_at'] - int(time.time()), currency='bcrt', final_cltv=INVOICE_CLTV)
+                                terms['expires_at'] - int(time.time()), currency='bcrt', final_cltv=final_cltv)
     signed = RPC.call(cli, 'signinvoice', unsigned)['bolt11']
     decoded = RPC.call(cli, 'decode', signed)
     expected = dict(valid=True, currency='bcrt', payee=data['node_ids'][0],
                     payment_hash=terms['payment_hash'], payment_secret=terms['payment_secret'],
-                    amount_msat=terms['btc_amount_msat'], min_final_cltv_expiry=INVOICE_CLTV)
+                    amount_msat=terms['btc_amount_msat'], min_final_cltv_expiry=final_cltv)
     if any(decoded.get(k) != v for k, v in expected.items()):
         raise RuntimeError('signed BTC invoice differs from routed quote')
     data['btc_invoice'] = signed

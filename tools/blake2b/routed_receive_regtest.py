@@ -26,7 +26,7 @@ def wait_for_ready(lab, node, backend, network, expected_id):
     wait_until(ready, node['proc'], timeout=90)
 
 
-def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain=None):
+def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain=None, bounded=False, stale_margin=False):
     btc, xbt = lab.node('knots-btc', False), lab.node('knots-xbt', True)
     gate, hold = lab.root/'quote_plugin.py', lab.root/'hold_htlc.py'
     for path in (gate, hold):
@@ -65,6 +65,12 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
         for a,b in ((sender,recipient),(recipient,sender)):
             wait_until(lambda:channel(a,b)['state']=='CHANNELD_NORMAL',a['proc'])
     fund(btc,payer,incoming)
+    if bounded:
+        # Incoming operator has no funding change; provide its on-chain reserve.
+        reserve_tx=rpc(btc,'sendtoaddress',rpc(incoming,'newaddr','bech32')['bech32'],'0.001')
+        mine(btc,1)
+        wait_until(lambda:any(o['txid']==reserve_tx and o['status']=='confirmed'
+                             for o in rpc(incoming,'listfunds')['outputs']),incoming['proc'])
     fund(xbt,outgoing,relay)
     fund(xbt,relay,receiver,private=private_hint)
     rpc(relay,'setchannel',channel(relay,receiver)['short_channel_id'],'5000msat',0)
@@ -102,7 +108,7 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
     workflow = None
     if api:
         from routed_receive_api_regtest import Workflow
-        workflow = Workflow(lab, incoming, outgoing, inv['bolt11'])
+        workflow = Workflow(lab, incoming, outgoing, inv['bolt11'], bounded=bounded)
         btc_invoice = workflow.offer['btc_invoice']
         btc_amount = workflow.offer['btc_sats'] * 1000
         ph = inv['payment_hash']
@@ -137,7 +143,22 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
         cmd=[sys.executable,str(Path(__file__).with_name('swap_controller.py')),'--state',str(path)]
         def controller(*args):
             return subprocess.run([*cmd,*args],capture_output=True,text=True,timeout=45)
-    if fee_limit:
+    if stale_margin:
+        terms=workflow.quote['terms']
+        spend=rpc(incoming,'xbt-spend-info',ph)
+        current=rpc(btc,'getblockcount')
+        mine(btc,spend['cltv_expiry']-current-terms['min_cltv_delta']+1)
+        before=(workflow.directory/'quote.json').read_bytes()
+        for _ in range(2):
+            result=workflow.step_result()
+            assert result.get('outcome') == 'refused' and result.get('phase') == 'prepared', result
+            assert (workflow.directory/'quote.json').read_bytes()==before
+            assert json.loads(path.read_text())['phase']=='prepared'
+            assert rpc(outgoing,'listsendpays')['payments']==[]
+            assert rpc(incoming,'xbt-quote-status',ph)['phase']=='held'
+        assert rpc(incoming,'xbt-fail',ph,json.dumps(status['binding']))['failed']==1
+        print('PASS: fresh BTC height one block below required margin refused twice; no XBT attempt; harness returned BTC',flush=True)
+    elif fee_limit:
         before=path.read_bytes()
         for _ in range(2):
             assert controller().returncode!=0
@@ -192,7 +213,7 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
             assert json.loads(result.stdout)['phase']==('btc_failed' if fail else 'btc_released')
         attempts=rpc(outgoing,'listsendpays')['payments']
         assert len(attempts)==1 and tuple(attempts[0].get(k) for k in ('id','groupid','partid'))==attempt_id
-    failed=fail or fee_limit
+    failed=fail or fee_limit or stale_margin
     paying.wait(timeout=40)
     assert (paying.returncode!=0)==failed
     deltas={k:0 for k in initial}
@@ -214,9 +235,9 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
         assert paid['amount_received_msat']==AMOUNT
         assert rpc(payer,'listpays',btc_invoice)['pays'][0]['preimage']==paid['payment_preimage']
     print('PASS: all six channel-side balances verified; no pending HTLCs; relay earned '+str(0 if failed else 5)+' sats',flush=True)
-    if api:
+    if api and not stale_margin:
         print('PASS: API authorization and fresh background workers delivered the original quote without reprice or resend', flush=True)
-    print(('Routed receive API OK (' if api else 'Routed BTC -> XBT delivery OK (')+('fee refusal' if fee_limit else 'XBT rejection' if fail else 'success')+('; private invoice hint' if private_hint else '; public route')+'; regtest only)',flush=True)
+    print(('Routed receive API OK (' if api else 'Routed BTC -> XBT delivery OK (')+('stale margin refusal' if stale_margin else 'fee refusal' if fee_limit else 'XBT rejection' if fail else 'success')+('; private invoice hint' if private_hint else '; public route')+'; regtest only)',flush=True)
 
 
 def main():
@@ -228,11 +249,16 @@ def main():
     modes.add_argument('--fee-limit',action='store_true')
     modes.add_argument('--onchain-preimage',action='store_true')
     modes.add_argument('--onchain-timeout',action='store_true')
+    modes.add_argument('--stale-margin',action='store_true')
+    p.add_argument('--bounded-policy',action='store_true',help='candidate forward checks; regtest only')
     p.add_argument('--private-hint',action='store_true',help='unannounced final XBT channel via signed invoice hint')
     p.add_argument('--api',action='store_true',help='exercise authenticated quote API and background worker')
     p.add_argument('--work-dir',type=Path)
     a=p.parse_args();temp=None
     onchain = 'preimage' if a.onchain_preimage else 'timeout' if a.onchain_timeout else None
+    if a.bounded_policy and (not a.api or a.private_hint or onchain or a.fee_limit):
+        p.error('--bounded-policy requires public-route --api without on-chain or fee-limit modes')
+    if a.stale_margin and not a.bounded_policy: p.error('--stale-margin requires --bounded-policy')
     if onchain and not a.api: p.error('on-chain cases require --api')
     if a.api and a.fee_limit: p.error('--api supports success and --fail-outgoing')
     if a.work_dir:
@@ -241,7 +267,7 @@ def main():
         temp=tempfile.TemporaryDirectory(prefix='cln-routed-receive-');root=Path(temp.name)
     lab=Lab(root,str(a.bitcoind.resolve()),str(a.bitcoin_cli.resolve()))
     print('Test directory: '+str(root),flush=True)
-    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint,onchain)
+    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint,onchain,a.bounded_policy,a.stale_margin)
     finally:
         lab.close()
         if temp:temp.cleanup()

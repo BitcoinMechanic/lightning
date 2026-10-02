@@ -59,6 +59,8 @@ def check_spend(state):
     from incoming_btc import enabled, check_spend as check_incoming
     if enabled(state):
         check_incoming(state, info, RPC.call)
+    if state.get('xbt_routing') == outgoing_xbt.bounds.MODE:
+        outgoing_xbt.bounds.gate(state, info)
     height = RPC.call(state['btc_cli'], 'getinfo')['blockheight']
     if info['expires_at'] <= int(time.time()):
         return 'quote_expired'

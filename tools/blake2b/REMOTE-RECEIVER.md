@@ -587,3 +587,100 @@ incur XBT mining fees, so these tests do not claim that all XBT balances are
 unchanged or that the relay's net profit is its nominal 5-sat routing fee.
 The stopped receiver is not restarted in the timeout case. Reorgs, simultaneous
 closure of both XBT channels, and live activation are outside these fixtures.
+
+
+### Read-only live routed receiving inspection
+
+`routed_receive_check.py` reads only the two operator RPC commands and their
+pinned identities from private service settings. It does not contact a customer
+wallet, create an invoice, publish a quote, authorize a worker, send a payment,
+close a channel or change configuration. Existing live receiving remains direct.
+
+Save a fresh XBT BOLT11 invoice in a user-owned file with mode `600`, then run
+on the operator machine:
+
+```sh
+.venv/bin/python tools/blake2b/routed_receive_check.py \
+  --invoice-file "$HOME/cln-live-pilot/routed-xbt-invoice-1.txt" \
+  --max-btc-sats 1480 --max-xbt-sats 500000 \
+  --max-xbt-routing-fee-sats 10 --margin-bps 100 --max-delay 288
+```
+
+The default settings path is `~/.config/cln-swaps/settings.json`. These command
+line caps apply only to inspection; they never expand service authorization.
+The XBT cap includes the full outgoing routing allowance. Neoxa asks price
+that entire budget; the report separately shows receiver amount and actual
+planned routing fee. Remote exchange execution and exchange fees are not
+included. The BTC payer's own routing fees are outside this estimate.
+
+Checks cover signed native XBT invoices, expiry/features, bounded public or
+hinted routes, first-hop spendable liquidity, conservative untrimmed HTLC
+minimum, eligible incoming BTC liquidity, advertised remote forwarding limits,
+and 50,000 confirmed unreserved sats on each operator. Unknown private-hop
+HTLC minima/maxima remain explicit blockers rather than assumed limits.
+Metadata-bearing XBT invoices remain unsupported by this outgoing path.
+
+The timing section is a candidate only: expected one BTC block per XBT block,
+six XBT submission blocks, 144 BTC recovery blocks, and 24 BTC quote-drift
+blocks, capped at 2016 incoming BTC blocks. Independent chain progress is not
+guaranteed; no current incoming HTLC exists to validate. Thus
+`live_timing_policy_checked` and `live_payment_enabled` remain false even when
+all read-only checks pass. Remote liquidity is not knowable from gossip, and
+`feasible` does not promise payment success. Use a fresh unpaid invoice: this
+inspection does not establish whether the receiver has already settled it.
+
+Output omits invoices, payment hashes, secrets, node IDs, routes and channel
+identifiers. RPC errors expose only a stage, exception type and numeric error
+code. Market validation errors that are not already whitelisted remain private.
+
+```sh
+.venv/bin/python tools/blake2b/test_routed_receive_check.py -v
+```
+
+### Candidate routed spending checks (regtest only)
+
+`bounded-receive-regtest-v1` exercises the next receiving admission policy
+through the authenticated API and background worker. It is not a live profile:
+operator networks must still be `regtest` and `xbt-regtest`, invoices are still
+fixed at 100,000 XBT test sats, and the fixture retains its 80-block outgoing
+route cap. No installed configuration, activation record or service is updated.
+
+The shared timing calculation assumes expected 1:1 block progress without
+promising it. The quote pins a minimum incoming BTC margin of outgoing XBT
+route delay + 6 submission blocks + 144 recovery blocks. Its signed BTC invoice
+adds 24 drift blocks, with a maximum remaining margin of 2016. The controller
+checks the held quote's exact policy and current BTC height again before send.
+The read-only live checker now imports this same calculation.
+
+Before registration and again before submission, the candidate checks 50,000
+confirmed unreserved on-chain sats at each operator, the outgoing first hop's
+conservative untrimmed threshold, and each advertised remote hop's current
+fee, delay, active flag and HTLC limits. Unknown private-hop limits block this
+candidate. There is no private-hint exception or live activation in this patch.
+Existing private-route regtests remain on their original profile.
+
+The selected route, funding output, timing and incoming BTC binding are stored
+with the quote/controller. Recovery of an already submitted attempt does not
+replan, reprice, or demand current admission reserves or gossip: it reconciles
+the original payment. This patch does not add a new deadline-close policy.
+A later live profile still needs explicit gate and deadline integration.
+
+```bash
+.venv/bin/python tools/blake2b/test_receive_bounds.py -v
+
+for mode in success fail-outgoing stale-margin; do
+  flags=()
+  if [ "$mode" != success ]; then flags=("--$mode"); fi
+  .venv/bin/python tools/blake2b/routed_receive_regtest.py \
+    --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+    --api --bounded-policy "${flags[@]}" || break
+done
+```
+
+Success and rejection restart both coordinators with pending payments, then
+use fresh workers to settle or fail the original attempt and verify all six
+channel-side balances. The stale-margin case advances only BTC until the
+original held payment has one block less than required; two workers must
+refuse before any XBT submission. The harness then fails the unspent BTC HTLC
+and verifies restored balances. This cancellation is a fixture action, not an
+automatic live refund policy.

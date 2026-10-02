@@ -63,7 +63,7 @@ def tick(settings):
         try:
             peers = RPC.call(settings['xbt_cli'], 'listpeers')['peers']
             health['xbt_connected'] = (any(p['connected'] for p in peers) if ('reverse_incoming_policy' in settings
-                                       or settings.get('receive_policy', {}).get('profile') == 'routed-receive-regtest-v1')
+                                       or settings.get('receive_policy', {}).get('profile') in ('routed-receive-regtest-v1', 'bounded-receive-regtest-v1'))
                                        else any(p['id'] == settings['receiver_id'] and p['connected'] for p in peers))
         except Exception:
             health['peer_status_available'] = False

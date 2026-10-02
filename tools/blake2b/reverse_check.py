@@ -70,7 +70,9 @@ def diagnostic(stage):
         raise DiagnosticError(stage, error) from None
 
 
-def private_invoice(path):
+def private_invoice(path, currency='bc'):
+    if currency not in ('bc', 'xbt'):
+        raise CheckError('unsupported invoice file currency')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
@@ -78,9 +80,9 @@ def private_invoice(path):
                 or info.st_mode & 0o077 or info.st_size > 32768):
             raise CheckError('invoice file must be private, owned by this user and at most 32 KiB')
         invoice = stream.read(32769).strip()
-    if (not invoice.lower().startswith('lnbc') or len(invoice) > 32768
+    if (not invoice.lower().startswith('ln'+currency) or len(invoice) > 32768
             or any(c.isspace() for c in invoice)):
-        raise CheckError('file must contain one BTC BOLT11 invoice')
+        raise CheckError('file must contain one '+('BTC' if currency == 'bc' else 'XBT')+' BOLT11 invoice')
     return invoice
 
 

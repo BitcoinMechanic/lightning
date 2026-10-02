@@ -1,6 +1,7 @@
 """Explicit public/hinted-route XBT delivery fixture. Regtest only; no live policy."""
 from reverse_route import plan_with_hints, validate
 from reverse_metadata import invoice_metadata
+import receive_bounds as bounds
 
 MODE = 'public-xbt-regtest-v1'
 AMOUNT = 100000000
@@ -9,7 +10,7 @@ AMOUNT = 100000000
 def enabled(state):
     if 'xbt_routing' not in state:
         return False
-    if (state.get('xbt_routing') != MODE or state.get('profile', 'regtest') != 'regtest'
+    if (state.get('xbt_routing') not in (MODE, bounds.MODE) or state.get('profile', 'regtest') != 'regtest'
             or state.get('quote_gate') is not True):
         raise ValueError('unsupported outgoing XBT routing profile')
     return True
@@ -40,6 +41,8 @@ def verify(state, rpc):
     validate(state['route'], state['xbt_amount_msat'], policy)
     if state['xbt_amount_msat'] != AMOUNT:
         raise ValueError('routed fixture amount changed')
+    if state['xbt_routing'] == bounds.MODE:
+        bounds.validate(state)
     for role, network, expected in (('btc_cli', 'regtest', state['btc_node_id']),
                                      ('xbt_cli', 'xbt-regtest', policy['source'])):
         info = rpc(state[role], 'getinfo')
@@ -71,6 +74,8 @@ def preflight(state, decoded, remaining, rpc):
     pin = {k: channels[0][k] for k in ('short_channel_id', 'peer_id', 'channel_id', 'funding_txid', 'funding_outnum')}
     if 'xbt_first_hop' in state and state['xbt_first_hop'] != pin:
         raise ValueError('outgoing funding pin changed')
+    if state['xbt_routing'] == bounds.MODE:
+        bounds.preflight(state, remaining, channels[0], rpc)
     state['xbt_first_hop'] = pin  # Persisted with outgoing_started before sendpay.
 
 
