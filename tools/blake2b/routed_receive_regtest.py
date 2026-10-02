@@ -26,7 +26,7 @@ def wait_for_ready(lab, node, backend, network, expected_id):
     wait_until(ready, node['proc'], timeout=90)
 
 
-def run(lab, fail=False, fee_limit=False, api=False):
+def run(lab, fail=False, fee_limit=False, api=False, private_hint=False):
     btc, xbt = lab.node('knots-btc', False), lab.node('knots-xbt', True)
     gate, hold = lab.root/'quote_plugin.py', lab.root/'hold_htlc.py'
     for path in (gate, hold):
@@ -48,31 +48,52 @@ def run(lab, fail=False, fee_limit=False, api=False):
         height=rpc(backend,'getblockcount')
         for n in ((payer,incoming) if backend is btc else (outgoing,relay,receiver)):
             wait_until(lambda:rpc(n,'getinfo')['blockheight']>=height,n['proc'],timeout=90)
-    def fund(backend,sender,recipient):
+    def fund(backend,sender,recipient,private=False):
         mine(backend,1)
         tx=rpc(backend,'sendtoaddress',rpc(sender,'newaddr','bech32')['bech32'],'0.02')
         mine(backend,1)
         wait_until(lambda:any(o['txid']==tx and o['status']=='confirmed' for o in rpc(sender,'listfunds')['outputs']),sender['proc'])
         rpc(sender,'connect',recipient['id'],'127.0.0.1',recipient['port'])
-        funding=rpc(sender,'fundchannel',recipient['id'],'1000000sat')
+        funding=lab.rpc([*sender['cli'],'-k'],'fundchannel','id='+recipient['id'],
+                        'amount=1000000sat','announce='+('false' if private else 'true'))
         wait_until(lambda:funding['txid'] in rpc(backend,'getrawmempool'))
         mine(backend,6)
         for a,b in ((sender,recipient),(recipient,sender)):
             wait_until(lambda:channel(a,b)['state']=='CHANNELD_NORMAL',a['proc'])
     fund(btc,payer,incoming)
     fund(xbt,outgoing,relay)
-    fund(xbt,relay,receiver)
+    fund(xbt,relay,receiver,private=private_hint)
     rpc(relay,'setchannel',channel(relay,receiver)['short_channel_id'],'5000msat',0)
     assert not any(c['peer_id']==receiver['id'] for c in rpc(outgoing,'listpeerchannels')['channels'])
     initial={(n['id'],c['short_channel_id']):c['to_us_msat'] for n in nodes for c in rpc(n,'listpeerchannels')['channels']}
-    inv=rpc(receiver,'invoice',str(AMOUNT)+'msat','routed-receive','Routed XBT delivery')
+    if private_hint:
+        wait_until(lambda: channel(receiver,relay).get('updates',{}).get('remote',{}).get('fee_base_msat') == 5000
+                   and channel(receiver,relay)['updates']['remote']['fee_proportional_millionths'] == 0,
+                   receiver['proc'])
+        assert channel(receiver,relay)['private']
+        assert not rpc(outgoing,'listchannels',channel(relay,receiver)['short_channel_id'])['channels']
+    inv=lab.rpc([*receiver['cli'],'-k'],'invoice','amount_msat='+str(AMOUNT)+'msat',
+                'label=routed-receive','description=Routed XBT delivery',
+                'exposeprivatechannels='+('true' if private_hint else 'false'))
     decoded=rpc(outgoing,'decode',inv['bolt11'])
     def route_ready():
         route,policy=plan(outgoing['cli'],decoded,outgoing['id'],lab.rpc)
         return (route,policy) if route[0]['amount_msat']==AMOUNT+5000 else None
     route,policy=wait_until(route_ready,outgoing['proc'],timeout=90)
     assert len(route)==2 and [h['id'] for h in route]==[relay['id'],receiver['id']]
-    print('PASS: no direct receiver channel; public two-hop XBT route charges 5 sats within 10-sat cap',flush=True)
+    if private_hint:
+        from reverse_route import no_route
+        assert any(len(h)==1 and h[0]['pubkey']==relay['id']
+                   and h[0]['short_channel_id']==route[-1]['channel'] for h in decoded.get('routes',[]))
+        try:
+            plan(outgoing['cli'],dict(decoded,routes=[]),outgoing['id'],lab.rpc)
+        except subprocess.CalledProcessError as error:
+            assert no_route(error)
+        else:
+            raise AssertionError('private receiver reachable without signed hint')
+        print('PASS: signed XBT hint supplies private final hop absent from operator gossip; total route fee 5 sats',flush=True)
+    else:
+        print('PASS: no direct receiver channel; public two-hop XBT route charges 5 sats within 10-sat cap',flush=True)
     workflow = None
     if api:
         from routed_receive_api_regtest import Workflow
@@ -185,7 +206,7 @@ def run(lab, fail=False, fee_limit=False, api=False):
     print('PASS: all six channel-side balances verified; no pending HTLCs; relay earned '+str(0 if failed else 5)+' sats',flush=True)
     if api:
         print('PASS: API authorization and fresh background workers delivered the original quote without reprice or resend', flush=True)
-    print(('Routed receive API OK (' if api else 'Routed BTC -> XBT delivery OK (')+('fee refusal' if fee_limit else 'XBT rejection' if fail else 'success')+'; public route; regtest only)',flush=True)
+    print(('Routed receive API OK (' if api else 'Routed BTC -> XBT delivery OK (')+('fee refusal' if fee_limit else 'XBT rejection' if fail else 'success')+('; private invoice hint' if private_hint else '; public route')+'; regtest only)',flush=True)
 
 
 def main():
@@ -195,6 +216,7 @@ def main():
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--fail-outgoing',action='store_true')
     modes.add_argument('--fee-limit',action='store_true')
+    p.add_argument('--private-hint',action='store_true',help='unannounced final XBT channel via signed invoice hint')
     p.add_argument('--api',action='store_true',help='exercise authenticated quote API and background worker')
     p.add_argument('--work-dir',type=Path)
     a=p.parse_args();temp=None
@@ -205,7 +227,7 @@ def main():
         temp=tempfile.TemporaryDirectory(prefix='cln-routed-receive-');root=Path(temp.name)
     lab=Lab(root,str(a.bitcoind.resolve()),str(a.bitcoin_cli.resolve()))
     print('Test directory: '+str(root),flush=True)
-    try: run(lab,a.fail_outgoing,a.fee_limit,a.api)
+    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint)
     finally:
         lab.close()
         if temp:temp.cleanup()

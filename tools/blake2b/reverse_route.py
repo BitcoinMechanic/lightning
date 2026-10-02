@@ -178,8 +178,15 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000, max_delay=80, max_hops=4
     policy = dict(source=source, destination=decoded['payee'], max_fee_msat=max_fee_msat,
                   max_delay=max_delay, max_hops=max_hops,
                   final_cltv=max(40, decoded['min_final_cltv_expiry']))
+    return plan_with_hints(cli, amount, policy, decoded.get('routes', []), rpc,
+                           _inspection=_inspection)
+
+
+def plan_with_hints(cli, amount, policy, hints, rpc, *, _inspection=False):
+    """Currency-independent route assembly; caller validates the signed invoice."""
     limits(policy, _inspection=_inspection)
-    hints = decoded.get('routes', [])
+    max_fee_msat, max_delay, max_hops = (policy[k] for k in ('max_fee_msat', 'max_delay', 'max_hops'))
+    source = policy['source']
     if not isinstance(hints, list) or len(hints) > 8:
         raise ValueError('too many or malformed reverse invoice hints')
     try:

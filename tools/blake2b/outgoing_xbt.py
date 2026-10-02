@@ -1,5 +1,5 @@
-"""Explicit public-route XBT delivery fixture. Regtest only; no live policy."""
-from reverse_route import query, convert, validate
+"""Explicit public/hinted-route XBT delivery fixture. Regtest only; no live policy."""
+from reverse_route import plan_with_hints, validate
 from reverse_metadata import invoice_metadata
 
 MODE = 'public-xbt-regtest-v1'
@@ -30,8 +30,7 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000):
                   max_delay=80, max_hops=4, final_cltv=40)
     # Share the currency-independent route conversion/limits, not the BTC
     # invoice validator. Signed XBT invoice fields are never rewritten.
-    route = convert(query(cli, AMOUNT, policy, rpc), AMOUNT, policy)
-    return route, policy
+    return plan_with_hints(cli, AMOUNT, policy, decoded.get('routes', []), rpc)
 
 
 def verify(state, rpc):

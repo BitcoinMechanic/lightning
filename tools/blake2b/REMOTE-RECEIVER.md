@@ -489,8 +489,8 @@ own routing fees are outside this estimate.
 
 This fixture policy is separate from live receiving profiles. It uses native
 `regtest`/`xbt-regtest` identities and signed invoices, refuses mainnet operators,
-and does not enable routed delivery for live services. Private route hints,
-multipath, automatic route retries and live activation are not added here.
+and does not enable routed delivery for live services. Multipath, automatic route retries and live activation are not added here.
+Private invoice hints are covered by the extension below.
 
 Run from the repository root:
 
@@ -512,3 +512,37 @@ processes submit and recover the payment. Both operators restart while pending.
 The tests check all six channel-side balances, the receiver invoice, original
 payment attempt, incoming/outgoing funding pins and absence of pending HTLCs.
 Success earns the relay 5 sats; rejection restores every channel balance.
+
+
+### Private XBT final channels (regtest only)
+
+Routed receiving also supports ordinary BOLT11 route hints from a signed XBT
+invoice. A public route remains preferred. If the planner reports no route,
+up to eight alternative private tails can be tried with a public prefix.
+The prefix and tail share the same total 10,000-msat fee, 80-block delay and
+four-hop limits. Tail fees compound with integer rounding. Invalid hints,
+loops and over-budget tails cannot authorize spending; transport errors do
+not trigger fallback. Invoice currencies are validated before the shared
+route assembly logic runs.
+
+The existing quote pins the complete selected route, allowance and first
+funding output. Recovery uses that route and original attempt, never the
+latest hint or a new route. The signed hint is routing information, not a
+promise of remote liquidity or current forwarding policy. This remains
+regtest-only and does not change live service configuration.
+
+```sh
+.venv/bin/python tools/blake2b/test_xbt_hints.py -v
+
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --api --private-hint
+
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --api --private-hint --fail-outgoing
+```
+
+The final XBT channel is unannounced and absent from the operator's gossip.
+Removing the invoice hint must make planning fail. Both API cases preserve
+fee-inclusive pricing, restart both operators while pending, and verify
+all six channel-side balances, original payment attempt and matching invoice
+outcomes. Only successful forwarding earns the relay its 5-sat fee.

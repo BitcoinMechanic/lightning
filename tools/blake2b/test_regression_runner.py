@@ -89,7 +89,10 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 69)
+        self.assertEqual(sum(c.live for c in catalog), 71)
+        private = [c for c in catalog if c.name.startswith('receive-private-api-')]
+        self.assertEqual(len(private), 2)
+        self.assertTrue(all('--api' in c.command and '--private-hint' in c.command for c in private))
         api = [c for c in catalog if c.name.startswith('receive-routed-api-')]
         self.assertEqual(len(api), 2)
         self.assertTrue(all('--api' in c.command for c in api))
