@@ -8,6 +8,14 @@ import tempfile
 from smoke_regtest import Lab, wait_until
 from receive_api_regtest import demo
 from service_manager import private_load
+from routed_receive_regtest import wait_for_ready
+
+
+def wait_for_quote_readiness(lab, btc, xbt, btc_backend, xbt_backend, node_ids):
+    # Hook replay and listener readiness can precede sync-warning clearance.
+    # Retain the original identities, rather than accepting restarted IDs.
+    wait_for_ready(lab, btc, btc_backend, 'regtest', node_ids[0])
+    wait_for_ready(lab, xbt, xbt_backend, 'xbt-regtest', node_ids[1])
 
 
 def run(lab, fail_second=False, any_btc=False):
@@ -64,6 +72,7 @@ def run(lab, fail_second=False, any_btc=False):
         old_id = btc['id']
         btc.update(lab.lightning('swap-btc', 'regtest', btc_backend, plugins=(plugin,)))
         assert btc['id'] == old_id
+        wait_for_ready(lab, btc, btc_backend, 'regtest', old_id)
         for p in payers:
             rpc(p, 'connect', btc['id'], '127.0.0.1', btc['port'])
         wait_until(lambda: any(h['payment_hash'] == state['payment_hash']
@@ -73,6 +82,7 @@ def run(lab, fail_second=False, any_btc=False):
         pinned_channel(state, rpc(btc, 'listpeerchannels')['channels'])
 
     for index, receiver in enumerate(receivers):
+        wait_for_quote_readiness(lab, btc, xbt, btc_backend, xbt_backend, settings['node_ids'])
         payer = payers[index] if any_btc else payers[0]
         unrelated_btc = channel(btc, payers[1-index])['to_us_msat'] if any_btc else None
         initial = {node['id']: channel(node, peer)['to_us_msat']

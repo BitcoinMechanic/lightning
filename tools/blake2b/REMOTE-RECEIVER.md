@@ -546,3 +546,44 @@ Removing the invoice hint must make planning fail. Both API cases preserve
 fee-inclusive pricing, restart both operators while pending, and verify
 all six channel-side balances, original payment attempt and matching invoice
 outcomes. Only successful forwarding earns the relay its 5-sat fee.
+
+
+### Routed API on-chain outcomes (regtest only)
+
+Two additional fixtures keep BTC height fixed while resolving XBT on-chain.
+Both use the authenticated API, a private final channel, saved quote/route,
+operator restarts while pending, and fresh worker processes for recovery.
+
+* `--onchain-preimage`: the relay closes its coordinator-facing channel with
+  the incoming HTLC unresolved. The receiver then settles over the surviving
+  final channel. The relay claims on-chain with that preimage, and the
+  coordinator extracts it from the witness. The relay's delayed sweep is
+  confirmed before the worker releases BTC.
+* `--onchain-timeout`: the receiver stops. The relay closes the private final
+  channel and recovers the outgoing HTLC after expiry and CSV delay. While the
+  outcome remains pending, fresh workers preserve BTC. Only the original XBT
+  attempt's definitive failure allows the worker to fail the bound BTC HTLC.
+
+The relay uses a 30-block XBT forwarding delta in these fixtures (70 blocks at
+route entry, 40 at the final hop). This stays within the existing 80-block
+route cap and leaves room for final-hop timeout recovery without closing the
+healthy upstream channel. It is not a live timing policy or a guarantee about
+relative BTC/XBT block progress.
+
+```sh
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --api --private-hint --onchain-preimage
+
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --api --private-hint --onchain-timeout
+```
+
+Checks include confirmed HTLC spends and CSV sweeps, repeated pending and
+terminal recovery without resending, original route/funding/quote bindings,
+BTC balances and the surviving XBT channel balances. Closed-channel proceeds
+incur XBT mining fees, so these tests do not claim that all XBT balances are
+unchanged or that the relay's net profit is its nominal 5-sat routing fee.
+The stopped receiver is not restarted in the timeout case. Reorgs, simultaneous
+closure of both XBT channels, and live activation are outside these fixtures.

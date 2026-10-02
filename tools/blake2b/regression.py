@@ -104,6 +104,10 @@ def cases():
         result.append(Case('receive-private-api-' + (mode or 'success'),
                            (sys.executable, str(HERE / 'routed_receive_regtest.py'), '--api', '--private-hint') +
                            (('--'+mode,) if mode else ()), True))
+    for mode in ('onchain-preimage', 'onchain-timeout'):
+        result.append(Case('receive-routed-api-' + mode,
+                           (sys.executable, str(HERE / 'routed_receive_regtest.py'),
+                            '--api', '--private-hint', '--'+mode), True))
     for mode in ('', 'force-close', 'htlc-timeout', 'preimage-claim'):
         result.append(Case('funded-' + (mode or 'mutual-close'),
                            (sys.executable, str(HERE / 'funded_regtest.py')) +

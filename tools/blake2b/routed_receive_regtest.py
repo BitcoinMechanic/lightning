@@ -26,7 +26,7 @@ def wait_for_ready(lab, node, backend, network, expected_id):
     wait_until(ready, node['proc'], timeout=90)
 
 
-def run(lab, fail=False, fee_limit=False, api=False, private_hint=False):
+def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain=None):
     btc, xbt = lab.node('knots-btc', False), lab.node('knots-xbt', True)
     gate, hold = lab.root/'quote_plugin.py', lab.root/'hold_htlc.py'
     for path in (gate, hold):
@@ -35,6 +35,10 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False):
     payer = lab.lightning('payer', 'regtest', btc)
     incoming = lab.lightning('btc-operator', 'regtest', btc, plugins=(gate,))
     outgoing = lab.lightning('xbt-operator', 'xbt-regtest', xbt)
+    if onchain:
+        relay_root = lab.root/'xbt-relay'
+        relay_root.mkdir(mode=0o700)
+        (relay_root/'config').write_text('cltv-delta=30\n')
     relay = lab.lightning('xbt-relay', 'xbt-regtest', xbt)
     receiver = lab.lightning('receiver', 'xbt-regtest', xbt, plugins=(hold,))
     nodes = (payer, incoming, outgoing, relay, receiver)
@@ -81,6 +85,7 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False):
         return (route,policy) if route[0]['amount_msat']==AMOUNT+5000 else None
     route,policy=wait_until(route_ready,outgoing['proc'],timeout=90)
     assert len(route)==2 and [h['id'] for h in route]==[relay['id'],receiver['id']]
+    if onchain: assert route[0]['delay'] == 70 and route[-1]['delay'] == 40
     if private_hint:
         from reverse_route import no_route
         assert any(len(h)==1 and h[0]['pubkey']==relay['id']
@@ -173,6 +178,11 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False):
             assert json.loads(result.stdout)['outcome']=='pending'
             assert json.loads(path.read_text())==checkpoint
         print('PASS: coordinators restarted pending; original route, funding pin and BTC binding preserved; no resend',flush=True)
+        if onchain:
+            from routed_receive_onchain import finish
+            finish(lab, workflow, payer, incoming, outgoing, relay, receiver,
+                   btc, xbt, inv, initial, paying, gate, onchain)
+            return
         method,field=('xbt-fail','failed') if fail else ('xbt-continue','continued')
         assert rpc(receiver,method,ph)[field]==1
         terminal='failed' if fail else 'complete'
@@ -216,10 +226,14 @@ def main():
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--fail-outgoing',action='store_true')
     modes.add_argument('--fee-limit',action='store_true')
+    modes.add_argument('--onchain-preimage',action='store_true')
+    modes.add_argument('--onchain-timeout',action='store_true')
     p.add_argument('--private-hint',action='store_true',help='unannounced final XBT channel via signed invoice hint')
     p.add_argument('--api',action='store_true',help='exercise authenticated quote API and background worker')
     p.add_argument('--work-dir',type=Path)
     a=p.parse_args();temp=None
+    onchain = 'preimage' if a.onchain_preimage else 'timeout' if a.onchain_timeout else None
+    if onchain and not a.api: p.error('on-chain cases require --api')
     if a.api and a.fee_limit: p.error('--api supports success and --fail-outgoing')
     if a.work_dir:
         root=a.work_dir.resolve();root.mkdir(mode=0o700,parents=True,exist_ok=False)
@@ -227,7 +241,7 @@ def main():
         temp=tempfile.TemporaryDirectory(prefix='cln-routed-receive-');root=Path(temp.name)
     lab=Lab(root,str(a.bitcoind.resolve()),str(a.bitcoin_cli.resolve()))
     print('Test directory: '+str(root),flush=True)
-    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint)
+    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint,onchain)
     finally:
         lab.close()
         if temp:temp.cleanup()

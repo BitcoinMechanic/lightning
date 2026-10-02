@@ -86,15 +86,34 @@ class RunnerTests(unittest.TestCase):
                 regression.main()
             self.assertEqual(error.exception.code, 2)
 
+    def test_multi_receiver_quote_readiness_pins_original_identities(self):
+        import receive_multi_regtest as multi
+        lab, btc, xbt, btc_backend, xbt_backend = [object() for _ in range(5)]
+        with patch.object(multi, 'wait_for_ready') as ready:
+            multi.wait_for_quote_readiness(lab, btc, xbt, btc_backend, xbt_backend, ['original-btc', 'original-xbt'])
+        self.assertEqual([c.args for c in ready.call_args_list], [
+            (lab, btc, btc_backend, 'regtest', 'original-btc'),
+            (lab, xbt, xbt_backend, 'xbt-regtest', 'original-xbt')])
+
+    def test_multi_receiver_readiness_failure_is_not_ignored(self):
+        import receive_multi_regtest as multi
+        with patch.object(multi, 'wait_for_ready', side_effect=AssertionError('identity mismatch')) as ready:
+            with self.assertRaises(AssertionError):
+                multi.wait_for_quote_readiness(None, None, None, None, None, ['btc', 'xbt'])
+        ready.assert_called_once()
+
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 71)
+        self.assertEqual(sum(c.live for c in catalog), 73)
         private = [c for c in catalog if c.name.startswith('receive-private-api-')]
         self.assertEqual(len(private), 2)
         self.assertTrue(all('--api' in c.command and '--private-hint' in c.command for c in private))
         api = [c for c in catalog if c.name.startswith('receive-routed-api-')]
-        self.assertEqual(len(api), 2)
+        self.assertEqual(len(api), 4)
+        onchain = [c for c in api if 'onchain' in c.name]
+        self.assertEqual(len(onchain), 2)
+        self.assertTrue(all('--private-hint' in c.command for c in onchain))
         self.assertTrue(all('--api' in c.command for c in api))
         delivery = [c for c in catalog if c.name.startswith('receive-routed-xbt-')]
         self.assertEqual(len(delivery), 3)

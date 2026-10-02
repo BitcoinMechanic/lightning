@@ -89,16 +89,25 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=
     import receive_selection
     original_select = receive_selection.select
     def selector(config, invoice, cap, ids):
+        diagnostic = {'stage': 'selection', 'warning_keys': []}
         def operator_rpc(cli, method, *args):
             assert cli in (btc['cli'], xbt['cli']), 'selection accessed customer RPC'
+            diagnostic['stage'] = ('btc.' if cli == btc['cli'] else 'xbt.') + method
             value = lab.rpc(cli, method, *args)
             if method == 'getinfo':
+                diagnostic['warning_keys'] = sorted(k for k in value if k.startswith('warning_'))
                 value['network'] = {'regtest':'bitcoin', 'xbt-regtest':'xbt'}[value['network']]
             if method == 'decode':
                 assert value['currency'] == 'xbtrt'
                 value['currency'] = 'xbt'
             return value
-        return original_select(config, invoice, cap, ids, rpc=operator_rpc)
+        try:
+            return original_select(config, invoice, cap, ids, rpc=operator_rpc)
+        except Exception as error:
+            # Fixture-only diagnostics: no RPC arguments, replies or identifiers.
+            print(json.dumps(dict(fixture_quote_selection_failed=True,
+                                  error_type=type(error).__name__, **diagnostic)), flush=True)
+            raise
     with patch('swap_service.create', create), patch('swap_service.publish', publish), patch('swap_service.identities', identities), patch('receive_selection.select', selector):
         api = Quotes(settings, auto_process=True)
         server = Server(port, api, credential)
