@@ -1075,3 +1075,55 @@ request with `--retry-quote`. Unexpected errors, other diagnostic stages and old
 `creating` records remain uncertain and are not reclassified by this update.
 Restart the quote API after updating the operator. Customer clients also need the
 updated `quote_refusal.py` to recognize the new response codes.
+
+### Unbound incoming XBT channel (service-regtest only)
+
+An explicit `reverse_incoming_policy: any-normal-v1` setting removes
+`receiver_id`/payer identity from the reverse service binding and omits both
+`payer_id` and `xbt_channel` from its quote terms. This mode currently requires
+`reverse-service-regtest-v1`; live activation and existing settings are not
+changed. A separate live migration must preserve historical obligations.
+
+Inspection checks only operator RPCs and requires at least one eligible,
+connected, normal incoming XBT channel with enough receivable liquidity and
+an untrimmed amount at current fees. It checks candidates individually; it
+cannot combine their balances for a single-part payment. This is not a channel
+reservation or a claim that the payer has a route to the operator.
+
+The signed XBT invoice can be paid through either incoming channel. The gate
+pins its first valid HTLC durably to the actual channel and HTLC ID. A different
+channel cannot replace that binding, even after restart or quote expiry.
+Before saving prepared controller state, the worker verifies the committed
+HTLC amount, payment hash, expiry and current enforceability, then captures
+`incoming_channel` (channel ID, funding transaction/output, peer and short
+channel ID). The controller rechecks that pin before spending and never
+replaces it on a retry. The immediate peer may be a routing node; it is not
+used as proof of the original payer's identity.
+
+Existing recovery, on-chain claim and deadline logic operate on that original
+pin. Unknown BTC outcomes never authorize a resend or XBT refund. Failed
+preflight leaves existing records available for inspection and reconciliation.
+A `scope: reverse` API credential permits `/v1/quote` without a payer ID and
+refuses `/v1/receive`. Authentication remains mandatory; this patch does not
+create a public endpoint, rotate credentials or change installed services.
+
+The new regtest mode funds two independent XBT incoming channels, chooses
+one payer per run, and verifies the unused channel's balance remains unchanged.
+Both operator nodes restart while payments are pending. Success and definite
+BTC rejection use the original attempt and original incoming binding.
+Price data is deterministic; invoices, API, worker, gate, HTLCs and balances
+use real regtest nodes. This fixture tests direct XBT payers, not a routed
+incoming XBT path.
+
+```sh
+.venv/bin/python tools/blake2b/test_incoming_xbt.py -v
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --any-xbt --auto-process
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --any-xbt --auto-process --second-payer
+.venv/bin/python tools/blake2b/reverse_service_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --any-xbt --auto-process --second-payer --fail-outgoing
+```
+
+The regression catalog adds `unit-incoming-xbt`, `reverse-any-xbt-first`,
+`reverse-any-xbt-second`, and `reverse-any-xbt-second-failure` (114 cases total).

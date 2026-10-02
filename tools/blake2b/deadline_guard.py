@@ -24,11 +24,15 @@ def protect(path, state, rpc, save):
     if info['network'] != ('bitcoin' if live else 'regtest'):
         raise RuntimeError('deadline network mismatch')
     channels = rpc(cli, 'listpeerchannels')['channels']
+    from incoming_btc import enabled, pinned_channel
+    pinned = pinned_channel(state, channels) if enabled(state) else None
     intent = state.get('btc_close_intent')
     if intent is None:
         spend = rpc(cli, 'xbt-spend-info', payment_hash)
         if spend['payment_hash'] != payment_hash or spend['binding'] != state['btc_binding']:
             raise RuntimeError('deadline held HTLC binding mismatch')
+        if pinned is not None and spend['cltv_expiry'] != state['btc_incoming_pin']['expiry']:
+            raise RuntimeError('deadline expiry differs from incoming funding pin')
         if spend['cltv_expiry'] - info['blockheight'] > (pilot.CLOSE_BLOCKS if live else 30):
             return
         matches = [c for c in channels if c.get('short_channel_id') == state['btc_binding'][0]]
@@ -51,6 +55,8 @@ def protect(path, state, rpc, save):
         if len(matches) != 1:
             raise RuntimeError('deadline close target missing or ambiguous')
         channel = matches[0]
+    if pinned is not None and (channel != pinned or intent['expiry'] != state['btc_incoming_pin']['expiry']):
+        raise RuntimeError('deadline target differs from incoming funding pin')
     if channel['state'] in ('AWAITING_UNILATERAL', 'FUNDING_SPEND_SEEN', 'ONCHAIN'):
         return  # CLN owns the close even if the controller lost its RPC reply.
     if channel['state'] not in ('CHANNELD_NORMAL', 'CHANNELD_SHUTTING_DOWN'):

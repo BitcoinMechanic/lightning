@@ -87,7 +87,7 @@ def private_invoice(path):
 @diagnostic('inspection')
 def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
           now=time.time, monotonic=time.monotonic, max_routing_fee_sats=10,
-          margin_bps=100, max_xbt_sats=500000, max_delay=288, _service_regtest=False, payer_id=None):
+          margin_bps=100, max_xbt_sats=500000, max_delay=288, _service_regtest=False, payer_id=None, incoming_policy=None):
     if (type(max_routing_fee_sats) is not int or not 0 <= max_routing_fee_sats <= 100
             or type(margin_bps) is not int or not 0 <= margin_bps <= 500
             or type(max_xbt_sats) is not int or not 0 < max_xbt_sats <= 500000):
@@ -104,9 +104,16 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
 
     if payer_id is not None and (not isinstance(payer_id, str) or not re.fullmatch('0[23][0-9a-f]{64}', payer_id)):
         raise CheckError('payer identity must be a compressed public key')
+    dynamic = incoming_policy is not None
+    if dynamic:
+        from incoming_xbt import POLICY
+        if incoming_policy != POLICY or not _service_regtest or payer_id is not None:
+            raise CheckError('unbound inspection requires explicit service regtest')
     infos = {}
     networks = ('regtest', 'xbt-regtest') if _service_regtest else ('bitcoin', 'xbt')
     for role, network in (('btc', networks[0]), ('operator', networks[1]), ('payer', networks[1])):
+        if role == 'payer' and dynamic:
+            continue
         if role == 'payer' and payer_id is not None:
             infos[role] = {'id': payer_id}
             continue
@@ -114,7 +121,7 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
         if info.get('network') != network or any(k.startswith('warning_') for k in info):
             raise CheckError('node network mismatch or node reports a warning')
         infos[role] = info
-    if len({i['id'] for i in infos.values()}) != 3:
+    if len({i['id'] for i in infos.values()}) != (2 if dynamic else 3):
         raise CheckError('three distinct node identities required')
     decoded = read('btc', 'decode', invoice)
     amount = decoded.get('amount_msat')
@@ -141,38 +148,6 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
     if expires - int(now()) < 120:
         raise CheckError('invoice expired or has less than two minutes remaining', 'invoice_expiring')
 
-    def normal(c):
-        return c.get('state') == 'CHANNELD_NORMAL' and c.get('peer_connected') is True and not c.get('htlcs')
-
-    # Ignore historical closed channels; require one unambiguous current pair.
-    with diagnostic('xbt_channels_and_reserves'):
-        pair = {}
-        for role, peer in (('payer', 'operator'), ('operator', 'payer')):
-            if role == 'payer' and payer_id is not None:
-                continue
-            matches = [c for c in read(role, 'listpeerchannels')['channels']
-                       if c.get('peer_id') == infos[peer]['id'] and c.get('state') == 'CHANNELD_NORMAL']
-            readiness = channel_reason(matches, 'xbt')
-            if readiness:
-                raise CheckError('need one connected normal XBT channel without pending HTLCs at both ends', readiness)
-            pair[role] = matches[0]
-        spendable = None
-        if payer_id is None:
-            for key in ('channel_id', 'funding_txid', 'funding_outnum'):
-                if key not in pair['payer'] or pair['payer'][key] != pair['operator'].get(key):
-                    raise CheckError('XBT endpoints disagree on channel funding identity')
-            spendable = pair['payer']['spendable_msat']
-            if type(spendable) is not int or spendable < 0:
-                raise CheckError('invalid XBT payer balance')
-        receivable = pair['operator']['receivable_msat']
-        if type(receivable) is not int or receivable < 0:
-            raise CheckError('invalid XBT operator balance')
-        xbt_min = max(minimum_sats(c) for c in pair.values())
-        reserves = {}
-        for role in ('btc', 'operator'):
-            outputs = read(role, 'listfunds')['outputs']
-            reserves[role] = sum(o['amount_msat'] for o in outputs
-                                 if o['status'] == 'confirmed' and o.get('reserved') is False) >= 50000000
     start = monotonic()
     with diagnostic('market.ticker_fetch'):
         ticker = market_fetch('ticker')
@@ -183,12 +158,57 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
     with diagnostic('market.validation'):
         audit = estimate(ticker, book, amount//1000, now_ms=int(now()*1000),
                          max_routing_fee_sats=max_routing_fee_sats, margin_bps=margin_bps)
+
+    def normal(c):
+        return c.get('state') == 'CHANNELD_NORMAL' and c.get('peer_connected') is True and not c.get('htlcs')
+
+    # Ignore historical closed channels; require one unambiguous current pair.
+    with diagnostic('xbt_channels_and_reserves'):
+        pair = {}
+        if dynamic:
+            from incoming_xbt import eligible
+            from quote_refusal import QuoteRefused
+            try:
+                candidates = eligible(read('operator', 'listpeerchannels')['channels'], audit['xbt_sats']*1000)
+            except QuoteRefused as error:
+                raise CheckError('no eligible incoming XBT liquidity', error.reason) from None
+            chosen = max(candidates, key=lambda c:c['receivable_msat'])
+            spendable = None
+            receivable = chosen['receivable_msat']
+            xbt_min = minimum_sats(chosen)
+        else:
+            for role, peer in (('payer', 'operator'), ('operator', 'payer')):
+                if role == 'payer' and payer_id is not None:
+                    continue
+                matches = [c for c in read(role, 'listpeerchannels')['channels']
+                           if c.get('peer_id') == infos[peer]['id'] and c.get('state') == 'CHANNELD_NORMAL']
+                readiness = channel_reason(matches, 'xbt')
+                if readiness:
+                    raise CheckError('need one connected normal XBT channel without pending HTLCs at both ends', readiness)
+                pair[role] = matches[0]
+            spendable = None
+            if payer_id is None:
+                for key in ('channel_id', 'funding_txid', 'funding_outnum'):
+                    if key not in pair['payer'] or pair['payer'][key] != pair['operator'].get(key):
+                        raise CheckError('XBT endpoints disagree on channel funding identity')
+                spendable = pair['payer']['spendable_msat']
+                if type(spendable) is not int or spendable < 0:
+                    raise CheckError('invalid XBT payer balance')
+            receivable = pair['operator']['receivable_msat']
+            if type(receivable) is not int or receivable < 0:
+                raise CheckError('invalid XBT operator balance')
+            xbt_min = max(minimum_sats(c) for c in pair.values())
+        reserves = {}
+        for role in ('btc', 'operator'):
+            outputs = read(role, 'listfunds')['outputs']
+            reserves[role] = sum(o['amount_msat'] for o in outputs
+                                 if o['status'] == 'confirmed' and o.get('reserved') is False) >= 50000000
     result = dict(read_only=True, live_payment_enabled=False, invoice_compatible=True,
                   payment_metadata_present=metadata is not None,
                   btc_sats=amount//1000, estimated_xbt_sats=audit['xbt_sats'],
                   max_routing_fee_sats=max_routing_fee_sats, margin_bps=margin_bps,
                   max_xbt_sats=max_xbt_sats, xbt_payer_spendable_sats=None if spendable is None else spendable//1000,
-                  payer_rpc_checked=payer_id is None,
+                  payer_rpc_checked=payer_id is None and not dynamic,
                   xbt_operator_receivable_sats=receivable//1000, xbt_minimum_sats=xbt_min,
                   operator_reserves_met=all(reserves.values()),
                   ticker_computed_at_ms=audit['ticker_computed_at_ms'],

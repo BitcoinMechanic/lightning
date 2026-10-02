@@ -249,7 +249,10 @@ def process(directory, settings, rpc=RPC.call, controller=run, now=time.time):
             if gate['phase'] != 'held':
                 raise ValueError('unexpected gate outcome')
             binding = gate['binding']
-            if not isinstance(binding, list) or len(binding) != 2 or binding[0] != quote['terms']['btc_channel']:
+            from incoming_btc import enabled, bind
+            dynamic = enabled(quote['controller'])
+            if (not isinstance(binding, list) or len(binding) != 2
+                    or (not dynamic and binding[0] != quote['terms']['btc_channel'])):
                 raise ValueError('incoming channel differs')
             committed = any(c.get('short_channel_id') == binding[0] and
                 any(h.get('id') == binding[1] and h.get('direction') == 'in'
@@ -260,6 +263,9 @@ def process(directory, settings, rpc=RPC.call, controller=run, now=time.time):
                 return {'outcome': 'waiting_for_commitment'}
             if any(p['payment_hash'] == ph for p in rpc(settings['xbt_cli'], 'listsendpays')['payments']):
                 raise ValueError('attempt without controller state')
-            save(path, dict(quote['controller'], btc_binding=binding))
+            prepared = dict(quote['controller'], btc_binding=binding)
+            if dynamic:
+                prepared = bind(prepared, rpc)
+            save(path, prepared)
         result = controller(path)
         return {k: result[k] for k in ('phase', 'outcome') if k in result}

@@ -15,7 +15,9 @@ from quote_plugin import replay_identity, save, validation_error
 def admission(terms, htlc, onion, now):
     # The shared validator's historical BTC field names refer to its incoming
     # leg. Adapt only at this boundary; stored reverse terms name assets exactly.
-    mapped = dict(terms, btc_amount_msat=terms['xbt_amount_msat'], btc_channel=terms['xbt_channel'])
+    mapped = dict(terms, btc_amount_msat=terms['xbt_amount_msat'])
+    if 'xbt_channel' in terms:
+        mapped['btc_channel'] = terms['xbt_channel']
     return validation_error(mapped, htlc, onion, now)
 
 

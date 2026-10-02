@@ -41,8 +41,15 @@ def binding(settings):
     ids = settings['node_ids']
     if len(ids) != 2:
         raise ValueError('operator identities unavailable')
-    return dict(btc_cli=settings['btc_cli'], xbt_cli=settings['xbt_cli'],
-                node_ids=[ids[1], ids[0]], payer_id=settings['receiver_id'])
+    config = dict(btc_cli=settings['btc_cli'], xbt_cli=settings['xbt_cli'], node_ids=[ids[1], ids[0]])
+    if 'reverse_incoming_policy' in settings:
+        from incoming_xbt import POLICY
+        if settings['reverse_incoming_policy'] != POLICY or settings.get('reverse_profile') != SERVICE_REGTEST:
+            raise ValueError('unbound reverse policy requires explicit service regtest')
+        config['incoming_policy'] = POLICY
+    else:
+        config['payer_id'] = settings['receiver_id']
+    return config
 
 
 def create(settings, invoice, directory, rpc=RPC.call, inspector=check):
@@ -62,7 +69,9 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
     try:
         summary = inspector(invoice, clis, rpc=rpc, max_routing_fee_sats=30,
                             margin_bps=100, max_xbt_sats=500000, max_delay=576,
-                            _service_regtest=profile == SERVICE_REGTEST, payer_id=config['payer_id'])
+                            _service_regtest=profile == SERVICE_REGTEST,
+                            **({'incoming_policy': config['incoming_policy']} if 'incoming_policy' in config
+                               else {'payer_id': config['payer_id']}))
     except DiagnosticError as error:
         reason = market_refusal(error)
         if reason is None:
@@ -107,10 +116,16 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
             or route[0]['amount_msat']-decoded['amount_msat'] != summary['routing_fee_msat']):
         raise ValueError('route changed since inspection; inspect anew')
     timing = proposal(route[0]['delay'])
-    channels = [c for c in rpc(config['xbt_cli'], 'listpeerchannels')['channels']
-                if c.get('peer_id') == config['payer_id'] and c['state'] == 'CHANNELD_NORMAL']
-    if len(channels) != 1 or not channels[0]['peer_connected'] or channels[0].get('htlcs'):
-        raise ValueError('incoming XBT channel not ready')
+    if 'incoming_policy' in config:
+        from incoming_xbt import eligible
+        eligible(rpc(config['xbt_cli'], 'listpeerchannels')['channels'], summary['estimated_xbt_sats']*1000)
+        incoming_terms = dict(incoming_policy=config['incoming_policy'])
+    else:
+        channels = [c for c in rpc(config['xbt_cli'], 'listpeerchannels')['channels']
+                    if c.get('peer_id') == config['payer_id'] and c['state'] == 'CHANNELD_NORMAL']
+        if len(channels) != 1 or not channels[0]['peer_connected'] or channels[0].get('htlcs'):
+            raise ValueError('incoming XBT channel not ready')
+        incoming_terms = dict(xbt_channel=channels[0]['short_channel_id'], payer_id=config['payer_id'])
     now = int(time.time())
     if now*1000-summary['ticker_computed_at_ms'] > 30000:
         raise ValueError('market snapshot became stale before quote')
@@ -120,9 +135,9 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
     terms = dict(profile=profile, payment_hash=decoded['payment_hash'],
         payment_secret=secrets.token_hex(32), btc_invoice=invoice,
         btc_amount_msat=decoded['amount_msat'], xbt_amount_msat=summary['estimated_xbt_sats']*1000,
-        xbt_channel=channels[0]['short_channel_id'], expires_at=expires,
+        expires_at=expires,
         min_cltv_delta=timing['minimum_xbt_remaining_blocks'], max_cltv_delta=2016,
-        node_ids=config['node_ids'], payer_id=config['payer_id'], route=route,
+        node_ids=config['node_ids'], **incoming_terms, route=route,
         routing=routing, timing=timing, allow_signed_private_final=True)
     validate_terms(terms)
     # Refuse existing directories, including partial drafts from lost replies.
@@ -193,6 +208,9 @@ def step(directory, *, recover_only=False, rpc=RPC.call, controller=reconcile, a
                 btc_amount_msat=terms['btc_amount_msat'], btc_invoice=terms['btc_invoice'],
                 btc_secret=quote['btc_secret'], btc_payment_metadata=quote['btc_payment_metadata'],
                 route=terms['route'], routing=terms['routing'])
+            from incoming_xbt import unbound, pin
+            if unbound(terms):
+                pin(state, rpc)
             save(path, state)
         state = private_load(path)
         if (state['reverse_quote'] != terms or state['btc_cli'] != config['btc_cli']

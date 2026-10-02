@@ -10,27 +10,35 @@ from quote_refusal import QuoteRefused
 from swap_rpc import RPC
 
 PROFILE = 'invoice-direct-v1'
+PROFILE_ANY = 'invoice-direct-v2'
 PIN_FIELDS = ('channel_id', 'funding_txid', 'funding_outnum')
 
 
 def is_selected(config):
-    return config.get('profile') == PROFILE
+    return config.get('profile') in (PROFILE, PROFILE_ANY)
 
 
 def configuration(settings):
     config = copy.deepcopy(settings['receive_policy'])
+    market_fields = {'max_btc_sats', 'max_xbt_sats', 'margin_bps'}
+    if config.get('profile') == PROFILE:
+        market_fields.add('btc_channel')
     if (set(config) != {'profile', 'btc_cli', 'xbt_cli', 'market'}
             or not is_selected(config) or config['btc_cli'] != settings['btc_cli']
             or config['xbt_cli'] != settings['xbt_cli']
-            or set(config['market']) != {'btc_channel', 'max_btc_sats', 'max_xbt_sats', 'margin_bps'}):
+            or set(config['market']) != market_fields):
         raise ValueError('invalid invoice-selected receive policy')
-    policy(dict(market=dict(config['market'], xbt_peer='selected', xbt_channel='selected')))
+    policy(dict(profile=concrete_profile(config), market=dict(config['market'], xbt_peer='selected', xbt_channel='selected')))
     return config
+
+
+def concrete_profile(config):
+    return 'live-market-v2' if config['profile'] == PROFILE_ANY else 'live-market-v1'
 
 
 def validate(selected, config, invoice, cap):
     expected = copy.deepcopy(config)
-    expected['profile'] = 'live-market-v1'
+    expected['profile'] = concrete_profile(config)
     expected['market'].update(xbt_peer=selected['payee'], xbt_channel=selected['channel'])
     expected['market']['max_btc_sats'] = min(cap, expected['market']['max_btc_sats'])
     if (selected['config'] != expected or selected['policy'] != config
@@ -71,7 +79,7 @@ def select(config, invoice, cap, node_ids, rpc=RPC.call, now=time.time):
         raise QuoteRefused(reason)
     c = channels[0]
     concrete = copy.deepcopy(config)
-    concrete['profile'] = 'live-market-v1'
+    concrete['profile'] = concrete_profile(config)
     concrete['market'].update(xbt_peer=d['payee'], xbt_channel=c['short_channel_id'])
     concrete['market']['max_btc_sats'] = min(cap, concrete['market']['max_btc_sats'])
     selected = dict(policy=config, config=concrete, payee=d['payee'], channel=c['short_channel_id'],

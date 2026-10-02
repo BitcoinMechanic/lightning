@@ -66,6 +66,11 @@ def validate_terms(terms):
                 'btc_amount_msat', 'btc_invoice', 'xbt_channel', 'expires_at',
                 'min_cltv_delta', 'max_cltv_delta', 'node_ids', 'payer_id',
                 'route', 'routing', 'timing', 'allow_signed_private_final'}
+    from incoming_xbt import unbound
+    dynamic = unbound(terms)
+    if dynamic:
+        required -= {'xbt_channel', 'payer_id'}
+        required.add('incoming_policy')
     if not isinstance(terms, dict) or set(terms) != required or terms['profile'] not in (PROFILE, SERVICE_REGTEST):
         raise ValueError('unsupported live reverse quote')
     for k in ('payment_hash', 'payment_secret'):
@@ -80,13 +85,13 @@ def validate_terms(terms):
             or not isinstance(terms['btc_invoice'], str)
             or not terms['btc_invoice'].startswith('ln'+networks(terms['profile'])['btc_currency'])
             or (terms['profile'] == PROFILE and terms['btc_invoice'].startswith('lnbcrt'))
-            or not re.fullmatch(r'[0-9]+x[0-9]+x[0-9]+', terms['xbt_channel'])):
+            or (not dynamic and not re.fullmatch(r'[0-9]+x[0-9]+x[0-9]+', terms['xbt_channel']))):
         raise ValueError('live reverse quote outside pilot bounds')
     ids = terms['node_ids']
+    all_ids = ids + ([] if dynamic else [terms['payer_id']]) if isinstance(ids, list) else []
     if (not isinstance(ids, list) or len(ids) != 2
-            or len(set(ids + [terms['payer_id']])) != 3
-            or any(not isinstance(i, str) or not re.fullmatch('0[23][0-9a-f]{64}', i)
-                   for i in ids + [terms['payer_id']])):
+            or len(set(all_ids)) != len(all_ids)
+            or any(not isinstance(i, str) or not re.fullmatch('0[23][0-9a-f]{64}', i) for i in all_ids)):
         raise ValueError('invalid live quote identities')
     route, policy = terms['route'], terms['routing']
     validate(route, terms['btc_amount_msat'], policy, _inspection=True)
@@ -112,9 +117,12 @@ def verify_state(state, rpc):
              'btc_amount_msat': 'btc_amount_msat', 'xbt_amount_msat': 'xbt_amount_msat',
              'node_ids': 'node_ids', 'route': 'route', 'routing': 'routing'}
     if (any(state.get(k) != terms[v] for k, v in pairs.items())
-            or state['xbt_binding'][0] != terms['xbt_channel']
+            or ('xbt_channel' in terms and state['xbt_binding'][0] != terms['xbt_channel'])
             or any(state.get(k) is not True for k in ('durable_gate', 'xbt_onchain_claim', 'xbt_deadline_guard'))):
         raise RuntimeError('live reverse controller binding changed')
+    from incoming_xbt import unbound, validate_pin
+    if unbound(terms):
+        validate_pin(state)
     for cli, network, node in ((state['xbt_cli'], net['xbt'], terms['node_ids'][0]),
                                (state['btc_cli'], net['btc'], terms['node_ids'][1])):
         info = rpc(cli, 'getinfo')
@@ -124,7 +132,7 @@ def verify_state(state, rpc):
 
 def preflight(state, decoded, incoming_channel, outgoing_channel, rpc):
     terms = state['reverse_quote']
-    if (incoming_channel['peer_id'] != terms['payer_id']
+    if (('payer_id' in terms and incoming_channel['peer_id'] != terms['payer_id'])
             or decoded.get('currency') != networks(state['profile'])['btc_currency']
             or invoice_metadata(decoded) != state['btc_payment_metadata']):
         raise RuntimeError('live reverse invoice or incoming peer mismatch')

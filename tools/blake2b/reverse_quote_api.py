@@ -150,9 +150,14 @@ class Server(HTTPServer):
         if not 1 <= port <= 65535:
             raise ValueError('invalid loopback port')
         self.receive_only = credentials.get('scope') == 'receive'
+        self.reverse_only = credentials.get('scope') == 'reverse'
         if self.receive_only:
             if set(credentials) != {'token', 'scope'} or 'receive_policy' not in quotes.settings:
                 raise ValueError('receive credential requires invoice-selected policy')
+        elif self.reverse_only:
+            from reverse_service import binding
+            if set(credentials) != {'token', 'scope'} or 'incoming_policy' not in binding(quotes.settings):
+                raise ValueError('reverse credential requires unbound incoming policy')
         elif credentials['payer_id'] != quotes.settings['receiver_id']:
             raise ValueError('API token is bound to another customer')
         if not re.fullmatch('[0-9a-f]{64}', credentials['token']):
@@ -192,6 +197,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(401, {'error': 'unauthorized'})
             return
         if self.server.receive_only and self.path != '/v1/receive':
+            self.reply(403, {'error': 'request_rejected'})
+            return
+        if self.server.reverse_only and self.path != '/v1/quote':
             self.reply(403, {'error': 'request_rejected'})
             return
         port = self.server.server_port

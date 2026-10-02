@@ -7,6 +7,8 @@ from pathlib import Path
 PROFILE = 'live-pilot-v1'
 PROFILE_V2 = 'live-pilot-v2'
 PROFILE_MARKET = 'live-market-v1'
+PROFILE_MARKET_ANY = 'live-market-v2'
+MARKET_PROFILES = (PROFILE_MARKET, PROFILE_MARKET_ANY)
 BTC_MSAT = 1000000
 XBT_MSAT = 2000000
 MIN_CLTV = 288
@@ -17,13 +19,13 @@ CLOSE_BLOCKS = 72
 
 def is_live(data):
     profile = data.get('profile', 'regtest')
-    if profile not in ('regtest', PROFILE, PROFILE_V2, PROFILE_MARKET):
+    if profile not in ('regtest', PROFILE, PROFILE_V2, PROFILE_MARKET, PROFILE_MARKET_ANY):
         raise ValueError('unknown swap profile')
-    return profile in (PROFILE, PROFILE_V2, PROFILE_MARKET)
+    return profile in (PROFILE, PROFILE_V2, PROFILE_MARKET, PROFILE_MARKET_ANY)
 
 
 def amounts(data):
-    if data.get('profile') == PROFILE_MARKET:
+    if data.get('profile') in MARKET_PROFILES:
         from market_policy import state_amounts
         return state_amounts(data)
     return (2000000, 4000000) if data.get('profile') == PROFILE_V2 else (BTC_MSAT, XBT_MSAT)

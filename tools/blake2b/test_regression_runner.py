@@ -39,16 +39,17 @@ class RunnerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)/'case'
                 lab = MagicMock()
-                def execute(instance, reject):
+                def execute(instance, reject, any_btc):
                     self.assertIs(instance, lab)
                     self.assertTrue(reject)
+                    self.assertTrue(any_btc)
                     (root/'retained.log').write_text('test diagnostic')
                     if fail:
                         raise RuntimeError('fixture failure')
                 with patch.object(multi, 'Lab', return_value=lab), \
                         patch.object(multi, 'run', side_effect=execute), redirect_stdout(io.StringIO()):
                     args = ['--bitcoind', '/bitcoind', '--bitcoin-cli', '/bitcoin-cli',
-                            '--work-dir', str(root), '--fail-second']
+                            '--work-dir', str(root), '--fail-second', '--any-btc']
                     if fail:
                         with self.assertRaises(RuntimeError): multi.main(args)
                     else:
@@ -88,7 +89,7 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 55)
+        self.assertEqual(sum(c.live for c in catalog), 60)
 
     def test_exit_codes_and_missing_executable(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -47,7 +47,7 @@ def config_from(path):
     pilot.is_live(config)
     if (config.get('profile') == pilot.PROFILE_V2) != ('previous_state' in config):
         raise ValueError('v2 requires previous_state; other profiles must omit it')
-    if (config.get('profile') == pilot.PROFILE_MARKET) != ('market' in config):
+    if (config.get('profile') in pilot.MARKET_PROFILES) != ('market' in config):
         raise ValueError('market profile requires market policy')
     if 'market' in config:
         from market_policy import policy
@@ -72,7 +72,7 @@ def identities(config):
 
 
 def create(config, invoice, btc_sats, directory):
-    market = config.get('profile') == pilot.PROFILE_MARKET
+    market = config.get('profile') in pilot.MARKET_PROFILES
     if market and btc_sats is not None:
         raise ValueError('market quotes obtain BTC amount only from the oracle')
     if not market and (type(btc_sats) is not int or not 0 < btc_sats <= 2100000000000000):
@@ -145,8 +145,12 @@ def create(config, invoice, btc_sats, directory):
         terms.update(replaces=replacement[0], btc_channel=replacement[1])
     if market:
         from market_policy import digest
-        terms.update(btc_channel=config['market']['btc_channel'],
-                     oracle_digest=digest(audit), controller_id=secrets.token_hex(32))
+        terms.update(oracle_digest=digest(audit), controller_id=secrets.token_hex(32))
+        if config['profile'] == pilot.PROFILE_MARKET_ANY:
+            from incoming_btc import POLICY
+            terms['btc_channel_policy'] = POLICY
+        else:
+            terms['btc_channel'] = config['market']['btc_channel']
     template = dict(config, phase='prepared', quote_gate=True, btc_deadline_guard=True,
                     payment_hash=decoded['payment_hash'], payment_secret=decoded['payment_secret'],
                     xbt_invoice=invoice, xbt_amount_msat=amount,
@@ -157,8 +161,9 @@ def create(config, invoice, btc_sats, directory):
         if replacement:
             template.update(btc_channel=replacement[1])
     if market:
-        template.update(btc_channel=terms['btc_channel'], oracle=audit,
-                        oracle_digest=terms['oracle_digest'], controller_id=terms['controller_id'])
+        template.update(oracle=audit, oracle_digest=terms['oracle_digest'], controller_id=terms['controller_id'])
+        key = 'btc_channel_policy' if config['profile'] == pilot.PROFILE_MARKET_ANY else 'btc_channel'
+        template[key] = terms[key]
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     # Save everything needed to retry registration/signing before any mutation.
     save(directory / 'quote.json', {'config': config, 'node_ids': ids, 'terms': terms,
@@ -167,7 +172,7 @@ def create(config, invoice, btc_sats, directory):
 
 def publication_preflight(data):
     terms = data['terms']
-    if data['config'].get('profile') == pilot.PROFILE_MARKET:
+    if data['config'].get('profile') in pilot.MARKET_PROFILES:
         from market_policy import publication
         publication(data, RPC.call)
     if data['config'].get('profile') == pilot.PROFILE_V2:
@@ -369,7 +374,7 @@ def main():
             return 0
         if args.command in ('quote', 'quote-market'):
             config = config_from(args.config)
-            if (args.command == 'quote-market') != (config.get('profile') == pilot.PROFILE_MARKET):
+            if (args.command == 'quote-market') != (config.get('profile') in pilot.MARKET_PROFILES):
                 raise ValueError('quote command does not match profile')
             invoice = (invoice_from_file(args.xbt_invoice_file)
                        if args.xbt_invoice_file is not None else args.xbt_invoice)

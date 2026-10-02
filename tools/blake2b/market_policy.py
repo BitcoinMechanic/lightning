@@ -14,15 +14,15 @@ MAX_XBT_SATS = 500000
 
 def policy(config):
     p = config['market']
-    if set(p) != {'btc_channel', 'xbt_channel', 'xbt_peer', 'max_btc_sats',
-                  'max_xbt_sats', 'margin_bps'}:
+    bindings = ('xbt_channel', 'xbt_peer') if config.get('profile') == pilot.PROFILE_MARKET_ANY else ('btc_channel', 'xbt_channel', 'xbt_peer')
+    if set(p) != set(bindings) | {'max_btc_sats', 'max_xbt_sats', 'margin_bps'}:
         raise ValueError('unexpected market policy fields')
     for key, limit in (('max_btc_sats', MAX_BTC_SATS), ('max_xbt_sats', MAX_XBT_SATS)):
         if type(p[key]) is not int or not 0 < p[key] <= limit:
             raise ValueError('market amount cap outside experimental bounds')
     if type(p['margin_bps']) is not int or not 0 <= p['margin_bps'] <= 500:
         raise ValueError('market margin must be 0..500 basis points')
-    for key in ('btc_channel', 'xbt_channel', 'xbt_peer'):
+    for key in bindings:
         if not isinstance(p[key], str) or not p[key]:
             raise ValueError('market policy needs explicit channel and receiver bindings')
     return p
@@ -46,19 +46,24 @@ def state_amounts(state):
     route = state['route']
     if (len(route) != 1 or route[0]['channel'] != p['xbt_channel']
             or route[0]['id'] != p['xbt_peer'] or route[0]['amount_msat'] != xbt
-            or route[0]['delay'] != 40 or state['btc_channel'] != p['btc_channel']):
+            or route[0]['delay'] != 40
+            or ('btc_channel' in p and state['btc_channel'] != p['btc_channel'])):
         raise RuntimeError('market route binding mismatch')
     return btc, xbt
 
 
 def channels(config, amount, btc_amount, rpc):
     p = policy(config)
-    incoming = [c for c in rpc(config['btc_cli'], 'listpeerchannels')['channels']
-                if c.get('short_channel_id') == p['btc_channel']]
-    reason = channel_reason(incoming, 'btc', btc_amount, 'receivable_msat')
-    if reason:
-        raise QuoteRefused(reason)
-    pilot.require_untrimmed(incoming[0], btc_amount)
+    if config.get('profile') == pilot.PROFILE_MARKET_ANY:
+        from incoming_btc import preflight
+        preflight(config, btc_amount, rpc)
+    else:
+        incoming = [c for c in rpc(config['btc_cli'], 'listpeerchannels')['channels']
+                    if c.get('short_channel_id') == p['btc_channel']]
+        reason = channel_reason(incoming, 'btc', btc_amount, 'receivable_msat')
+        if reason:
+            raise QuoteRefused(reason)
+        pilot.require_untrimmed(incoming[0], btc_amount)
     matches = [c for c in rpc(config['xbt_cli'], 'listpeerchannels')['channels']
                if c.get('short_channel_id') == p['xbt_channel'] and c['peer_id'] == p['xbt_peer']]
     reason = channel_reason(matches, 'xbt', amount)
@@ -93,11 +98,16 @@ def publication(data, rpc):
     if (terms['btc_amount_msat'] != btc or terms['xbt_amount_msat'] != xbt
             or terms['oracle_digest'] != state['oracle_digest']
             or terms['controller_id'] != state['controller_id']
-            or terms['btc_channel'] != state['btc_channel']
+            or ('btc_channel' in state and terms.get('btc_channel') != state['btc_channel'])
             or terms['payment_hash'] != state['payment_hash']
             or terms['xbt_invoice'] != state['xbt_invoice']
-            or terms['pilot'] != pilot.PROFILE_MARKET):
+            or terms['pilot'] != state['profile']):
         raise RuntimeError('market terms differ from controller checkpoint')
+    if state['profile'] == pilot.PROFILE_MARKET_ANY:
+        from incoming_btc import POLICY
+        if (terms.get('btc_channel_policy') != POLICY or state.get('btc_channel_policy') != POLICY
+                or 'btc_channel' in terms or 'btc_channel' in state):
+            raise RuntimeError('unbound incoming policy differs')
     now = time.time_ns() // 1000000
     if not 0 <= now-state['oracle']['ticker_computed_at_ms'] <= 30000:
         raise RuntimeError('price too old to publish; preserve draft and let it expire')

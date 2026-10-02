@@ -20,10 +20,12 @@ import swap_service as service
 import swap_regtest
 
 
-def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=None):
+def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=None, restart=None):
     rpc = lambda node, *args: lab.rpc(node['cli'], *args)
     def channel(node):
         channels = rpc(node, 'listpeerchannels')['channels']
+        if node['id'] == btc['id']:
+            channels = [c for c in channels if c['peer_id'] == payer['id']]
         if node['id'] == xbt['id']:
             channels = [c for c in channels if c['peer_id'] == receiver['id']]
         assert len(channels) == 1
@@ -37,6 +39,7 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=
     if selected_settings is not None:
         settings = selected_settings
         credential = dict(token='ab'*32, scope='receive')
+    dynamic = settings.get('receive_policy', {}).get('profile') == 'invoice-direct-v2'
     ordinary = dict(btc_cli=btc['cli'], xbt_cli=xbt['cli'])
     original_create, original_publish, original_identities = service.create, service.publish, service.identities
 
@@ -48,6 +51,10 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=
         assert config['market']['max_btc_sats'] >= 1500
         original_create(ordinary, invoice, 1500, directory)
         q = private_load(directory/'quote.json'); q['config'] = config
+        if dynamic:
+            from incoming_btc import POLICY
+            q['terms']['btc_channel_policy'] = POLICY
+            q['controller'].update(btc_channel_policy=POLICY, btc_amount_msat=1500000)
         save(directory/'quote.json', q)
 
     def publish(directory):
@@ -55,7 +62,8 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=
         q['config'] = ordinary; save(directory/'quote.json', q)
         original_publish(directory)
         q = private_load(directory/'quote.json'); q['config'] = outer
-        q['terms']['btc_channel'] = config['market']['btc_channel']
+        if not dynamic:
+            q['terms']['btc_channel'] = config['market']['btc_channel']
         save(directory/'quote.json', q)
 
     def identities(config):
@@ -116,6 +124,10 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=
                 return (swap/'state.json').exists() and private_load(swap/'state.json')['phase']=='outgoing_started'
             wait_until(submitted,paying,timeout=60)
             before=(swap/'state.json').read_bytes()
+            if restart is not None:
+                restart(private_load(swap/'state.json'))
+                assert (swap/'state.json').read_bytes() == before
+                print('PASS: BTC operator restarted; original incoming hook and funding pin preserved',flush=True)
             assert process(swap,settings)['outcome']=='pending'
             assert process(swap,settings)['outcome']=='pending'
             assert (swap/'state.json').read_bytes()==before

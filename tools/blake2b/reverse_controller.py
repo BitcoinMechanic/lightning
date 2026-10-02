@@ -62,6 +62,9 @@ def incoming(state, *, allow_onchain=False):
     if len(channels) != 1:
         raise RuntimeError('bound incoming channel unavailable')
     channel = channels[0]
+    from incoming_xbt import unbound, validate_pin
+    if unbound(state.get('reverse_quote', {})):
+        validate_pin(state, channel)
     if channel['state'] == 'ONCHAIN' and allow_onchain:
         pin = state.get('incoming_channel')
         keys = ('channel_id', 'funding_txid', 'funding_outnum', 'peer_id', 'short_channel_id')
@@ -96,9 +99,11 @@ def gate_status(state):
     quote = state['reverse_quote']
     expected = dict(payment_hash=state['payment_hash'], btc_invoice=state['btc_invoice'],
                     btc_amount_msat=state['btc_amount_msat'], xbt_amount_msat=state['xbt_amount_msat'],
-                    xbt_channel=state['xbt_binding'][0],
                     min_cltv_delta=quote['timing']['minimum_xbt_remaining_blocks'] if live.is_service(state) else 100,
                     max_cltv_delta=2016 if live.is_service(state) else 2000)
+    from incoming_xbt import unbound
+    if not unbound(quote):
+        expected['xbt_channel'] = state['xbt_binding'][0]
     if (any(quote.get(k) != v for k, v in expected.items())
             or result['payment_hash'] != state['payment_hash']
             or result['terms'] != quote or result['binding'] != state['xbt_binding']
@@ -155,8 +160,11 @@ def preflight(state):
         if state['xbt_onchain_claim'] is not True or not state.get('durable_gate'):
             raise RuntimeError('on-chain claim requires a durable reverse gate')
         # Captured from the verified normal channel, before BTC submission.
-        state['incoming_channel'] = {k: channel[k] for k in
+        pin = {k: channel[k] for k in
             ('channel_id', 'funding_txid', 'funding_outnum', 'peer_id', 'short_channel_id')}
+        if 'incoming_channel' in state and state['incoming_channel'] != pin:
+            raise RuntimeError('incoming funding pin changed before BTC submission')
+        state['incoming_channel'] = pin
 
 
 def outcome(state):

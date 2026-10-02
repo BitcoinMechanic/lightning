@@ -341,3 +341,53 @@ invoices, HTLCs, payments and channel balances come from the regtest nodes.
 .venv/bin/python tools/blake2b/receive_multi_regtest.py \
   --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --fail-second
 ```
+
+### Unbound incoming BTC channel (experimental, opt-in)
+
+`invoice-direct-v2` extends invoice-selected receiving by omitting
+`btc_channel` from the receiving policy. Its market fields are only
+`max_btc_sats`, `max_xbt_sats` and `margin_bps`. It creates a concrete
+`live-market-v2` quote with `btc_channel_policy: any-normal-v1` and the
+existing invoice-selected XBT destination/funding pin. The standalone BTC
+quote plugin recognizes this profile only with an explicit matching live
+opt-in. This patch does not change installed settings, credentials, launchers
+or running services; the old receiving profiles remain supported.
+
+Before publication, the operator checks that at least one connected, normal,
+clear BTC channel has enough receivable liquidity and a sufficient HTLC
+amount at its current fees. This check does not reserve a channel or guarantee
+that a future incoming payment will use it. The first accepted HTLC binds the
+quote durably to its actual incoming short channel ID and HTLC ID. Another
+channel cannot replace that binding, including after plugin restart.
+
+Before the worker spends XBT it verifies the exact incoming HTLC is committed,
+normal, connected, untrimmed and matches the quote amount and expiry. It saves
+`btc_incoming_pin` containing the original channel ID, funding transaction and
+output, binding, payment hash, amount and expiry before invoking the controller.
+The controller rechecks these fields immediately before submission. Pending
+recovery does not select another incoming channel or resend XBT. The deadline
+guard can close only the pinned funding channel. An ineligible incoming HTLC
+never authorizes XBT spending; preserve its record for reconciliation.
+
+The new profile is exercised through the receiving API/worker. It is not a
+migration command or a public-service deployment. Authentication, one active
+live quote, single-part payments and direct XBT delivery remain constraints.
+No wallet RPC from the recipient is used by the operator.
+
+Regtest exercises two BTC payer channels and two XBT recipient channels,
+sequentially, with a BTC operator restart while each payment is pending. It
+checks both successful settlement and rejection/refund of the second payment,
+retained funding pins, unaffected other channels and one XBT attempt per quote.
+Network labels and price acquisition use the existing fixed-price regtest
+adapter; gate, wallet, worker and controller operations use real test nodes.
+
+```sh
+.venv/bin/python tools/blake2b/test_incoming_btc.py -v
+.venv/bin/python tools/blake2b/receive_multi_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --any-btc
+.venv/bin/python tools/blake2b/receive_multi_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --any-btc --fail-second
+```
+
+The regression catalog includes `unit-incoming-btc`, `receive-any-btc-success`
+and `receive-any-btc-fail-second` (110 total cases).

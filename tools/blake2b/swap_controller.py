@@ -49,12 +49,15 @@ def check_spend(state):
         if (state['profile'] in (pilot.PROFILE_V2, pilot.PROFILE_MARKET)
                 and info.get('btc_channel') != state.get('btc_channel')):
             raise RuntimeError('live quote incoming channel mismatch')
-        if state['profile'] == pilot.PROFILE_MARKET:
+        if state['profile'] in pilot.MARKET_PROFILES:
             if (info.get('oracle_digest') != state['oracle_digest']
                     or info.get('controller_id') != state['controller_id']):
                 raise RuntimeError('market quote audit or controller mismatch')
         pilot.require_reserves(state, RPC.call)
         pilot.check_channels(state, RPC.call)
+    from incoming_btc import enabled, check_spend as check_incoming
+    if enabled(state):
+        check_incoming(state, info, RPC.call)
     height = RPC.call(state['btc_cli'], 'getinfo')['blockheight']
     if info['expires_at'] <= int(time.time()):
         return 'quote_expired'
@@ -110,6 +113,9 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
     if recover_only and state['phase'] == 'prepared':
         return {'phase': 'prepared', 'outcome': 'needs_manual_start'}
     pilot.verify_state(state, RPC.call)
+    from incoming_btc import enabled, validate_state
+    if enabled(state):
+        validate_state(state)
     payment_hash = state['payment_hash']
     if state['phase'] == 'prepared':
         if state.get('quote_gate'):
