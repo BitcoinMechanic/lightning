@@ -684,3 +684,47 @@ original held payment has one block less than required; two workers must
 refuse before any XBT submission. The harness then fails the unspent BTC HTLC
 and verifies restored balances. This cancellation is a fixture action, not an
 automatic live refund policy.
+
+### Routed gate commitments and bounded BTC deadline
+
+The standalone gate recognizes the future `live-routed-receive-v1` profile
+only when explicitly selected on Bitcoin. Default initialization and existing
+live profiles do not admit new quotes for that profile. This patch supplies no
+launcher/configuration switch or live quote producer; live execution remains
+unsupported by the routed controller. Do not change the running pilot option.
+
+Routed terms carry `xbt_route_delay` and `xbt_route_digest`. The digest binds the
+selected route, route limits and outgoing funding pin. The gate requires the
+minimum incoming delta to be outgoing delay + 150, maximum 2016, and an outgoing
+delay from 1 through 1842. Live terms retain whole-sat 10,000 BTC/500,000 XBT caps,
+120-second admission expiry, one active quote, oracle/controller bindings and
+explicit any-normal incoming policy. Held replay after expiry preserves the
+original accepted hook. The copied plugin remains self-contained.
+
+The bounded regtest producer now supplies those same routed fields, and the
+controller verifies them against `xbt-spend-info`. It requires deadline
+protection with a pinned 72-block threshold. Legacy regtests retain 30; existing
+live pilots retain 72. At the threshold, pending recovery persists the exact
+incoming channel close intent before RPC. A lost response is reconciled using
+channel state, without resending XBT or closing another channel. Unknown outgoing
+outcomes do not authorize a close. New quote admission checks do not block
+recovery of an existing pending attempt.
+
+The new funded test reuses the API quote, both-operator restart and fresh-worker
+path. It keeps XBT height fixed, verifies 73/72 BTC-block boundary behavior,
+confirms the BTC commitment with unresolved HTLC, then allows routed XBT to
+settle. The original preimage releases the BTC hook; confirmed witness and CSV
+sweep prove the coordinator's recovery. XBT channel-side balances and the
+original outgoing attempt are checked; BTC on-chain fees apply.
+
+```bash
+.venv/bin/python tools/blake2b/test_receive_gate_deadline.py -v
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+  --api --bounded-policy --btc-deadline
+```
+
+A block-count threshold still cannot guarantee relative progress, timely
+confirmation or recovery on independent chains. Old disposable bounded fixture
+records lack the new commitment/guard fields; generate new regtest runs rather
+than modifying those records. No live records are migrated by applying this patch.

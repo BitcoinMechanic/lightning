@@ -110,6 +110,8 @@ def validate_quote(data):
             or audit.get('max_xbt_routing_fee_msat') != config['max_xbt_routing_fee_msat']
             or audit.get('routing_fee_allowance_included') is not True):
         raise ValueError('routed quote amount, pricing or controller binding differs')
+    if bounded:
+        bounds.gate(state, terms)
     policy = state['xbt_route_policy']
     if (policy['source'] != data['node_ids'][1]
             or policy['max_fee_msat'] != config['max_xbt_routing_fee_msat']
@@ -167,8 +169,10 @@ def create(config, invoice, btc_sats, directory):
                  xbt_invoice=invoice, xbt_amount_msat=routed.AMOUNT,
                  btc_amount_msat=terms['btc_amount_msat'], route=route, xbt_route_policy=policy)
     if bounded:
-        state['xbt_timing'] = timing
+        state.update(xbt_timing=timing, btc_deadline_guard=True, btc_close_blocks=bounds.CLOSE_BLOCKS)
     routed.preflight(state, decoded, minimum, RPC.call)
+    if bounded:
+        terms.update(xbt_route_delay=route[0]['delay'], xbt_route_digest=bounds.route_digest(state))
     incoming_btc.preflight(config, terms['btc_amount_msat'], RPC.call)
     data = dict(config=copy.deepcopy(config), node_ids=ids, terms=terms, controller=state, oracle=audit)
     validate_quote(data)

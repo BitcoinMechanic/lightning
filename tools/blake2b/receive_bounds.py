@@ -2,11 +2,20 @@
 
 Independent chain progress is never guaranteed by these block margins.
 """
+import hashlib
+import json
+
 from live_pilot import require_reserves, require_untrimmed
 from reverse_policy import inspect_remote_policies
 
 MODE = 'bounded-xbt-regtest-v1'
 PROFILE = 'bounded-receive-regtest-v1'
+CLOSE_BLOCKS = 72
+
+
+def route_digest(state):
+    value = {k: state[k] for k in ('route', 'xbt_route_policy', 'xbt_first_hop')}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def timing(delay):
@@ -26,6 +35,10 @@ def validate(state):
     expected = timing(state['route'][0]['delay'])
     if (state.get('profile') != 'regtest' or state.get('xbt_routing') != MODE
             or state.get('quote_gate') is not True or state.get('xbt_timing') != expected
+            or state.get('btc_deadline_guard') is not True
+            or type(state.get('btc_close_blocks')) is not int
+            or state.get('btc_close_blocks') != CLOSE_BLOCKS
+            or state.get('btc_channel_policy') != 'any-normal-v1' or 'btc_channel' in state
             or not expected['fits_default_cltv_budget']):
         raise ValueError('bounded receiving policy or timing changed')
     return expected
@@ -33,7 +46,9 @@ def validate(state):
 
 def gate(state, info):
     policy = validate(state)
-    if (info.get('min_cltv_delta') != policy['minimum_btc_remaining_blocks']
+    if (info.get('xbt_route_delay') != state['route'][0]['delay']
+            or info.get('xbt_route_digest') != route_digest(state)
+            or info.get('min_cltv_delta') != policy['minimum_btc_remaining_blocks']
             or info.get('max_cltv_delta') != policy['maximum_btc_remaining_blocks']):
         raise ValueError('held quote timing differs from pinned routed policy')
 

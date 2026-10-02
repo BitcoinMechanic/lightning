@@ -26,7 +26,7 @@ def wait_for_ready(lab, node, backend, network, expected_id):
     wait_until(ready, node['proc'], timeout=90)
 
 
-def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain=None, bounded=False, stale_margin=False):
+def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain=None, bounded=False, stale_margin=False, btc_deadline=False):
     btc, xbt = lab.node('knots-btc', False), lab.node('knots-xbt', True)
     gate, hold = lab.root/'quote_plugin.py', lab.root/'hold_htlc.py'
     for path in (gate, hold):
@@ -199,6 +199,11 @@ def run(lab, fail=False, fee_limit=False, api=False, private_hint=False, onchain
             assert json.loads(result.stdout)['outcome']=='pending'
             assert json.loads(path.read_text())==checkpoint
         print('PASS: coordinators restarted pending; original route, funding pin and BTC binding preserved; no resend',flush=True)
+        if btc_deadline:
+            from routed_receive_deadline import finish
+            finish(lab, workflow, payer, incoming, outgoing, relay, receiver,
+                   btc, xbt, inv, initial, paying)
+            return
         if onchain:
             from routed_receive_onchain import finish
             finish(lab, workflow, payer, incoming, outgoing, relay, receiver,
@@ -249,6 +254,7 @@ def main():
     modes.add_argument('--fee-limit',action='store_true')
     modes.add_argument('--onchain-preimage',action='store_true')
     modes.add_argument('--onchain-timeout',action='store_true')
+    modes.add_argument('--btc-deadline',action='store_true')
     modes.add_argument('--stale-margin',action='store_true')
     p.add_argument('--bounded-policy',action='store_true',help='candidate forward checks; regtest only')
     p.add_argument('--private-hint',action='store_true',help='unannounced final XBT channel via signed invoice hint')
@@ -258,6 +264,7 @@ def main():
     onchain = 'preimage' if a.onchain_preimage else 'timeout' if a.onchain_timeout else None
     if a.bounded_policy and (not a.api or a.private_hint or onchain or a.fee_limit):
         p.error('--bounded-policy requires public-route --api without on-chain or fee-limit modes')
+    if a.btc_deadline and not a.bounded_policy: p.error('--btc-deadline requires --bounded-policy')
     if a.stale_margin and not a.bounded_policy: p.error('--stale-margin requires --bounded-policy')
     if onchain and not a.api: p.error('on-chain cases require --api')
     if a.api and a.fee_limit: p.error('--api supports success and --fail-outgoing')
@@ -267,7 +274,7 @@ def main():
         temp=tempfile.TemporaryDirectory(prefix='cln-routed-receive-');root=Path(temp.name)
     lab=Lab(root,str(a.bitcoind.resolve()),str(a.bitcoin_cli.resolve()))
     print('Test directory: '+str(root),flush=True)
-    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint,onchain,a.bounded_policy,a.stale_margin)
+    try: run(lab,a.fail_outgoing,a.fee_limit,a.api,a.private_hint,onchain,a.bounded_policy,a.stale_margin,a.btc_deadline)
     finally:
         lab.close()
         if temp:temp.cleanup()

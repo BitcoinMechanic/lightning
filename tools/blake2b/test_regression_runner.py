@@ -106,9 +106,9 @@ class RunnerTests(unittest.TestCase):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
         self.assertIn('unit-routed-receive-check', {case.name for case in catalog})
-        self.assertEqual(sum(c.live for c in catalog), 76)
+        self.assertEqual(sum(c.live for c in catalog), 77)
         bounded = [c for c in catalog if c.name.startswith('receive-bounded-api-')]
-        self.assertEqual(len(bounded), 3)
+        self.assertEqual(len(bounded), 4)
         self.assertTrue(all('--api' in c.command and '--bounded-policy' in c.command for c in bounded))
         self.assertIn('unit-receive-bounds', {case.name for case in catalog})
         private = [c for c in catalog if c.name.startswith('receive-private-api-')]

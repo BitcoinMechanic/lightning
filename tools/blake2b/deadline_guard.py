@@ -1,6 +1,6 @@
 """Opt-in BTC close policy, run during pending reconciliation.
 
-Regtest uses 30 BTC blocks; the live pilot uses 72. Neither threshold is a
+Legacy regtest uses 30 BTC blocks; the live pilot and bounded candidate use 72. Neither threshold is a
 cross-chain safety guarantee.
 The caller holds the controller lock. No payment is failed or resent here.
 """
@@ -8,6 +8,11 @@ The caller holds the controller lock. No payment is failed or resent here.
 import live_pilot as pilot
 
 def protect(path, state, rpc, save):
+    import receive_bounds as bounds
+    bounded = state.get('xbt_routing') == bounds.MODE
+    if bounded:
+        bounds.validate(state)
+    threshold = bounds.CLOSE_BLOCKS if bounded else (pilot.CLOSE_BLOCKS if pilot.is_live(state) else 30)
     if not state.get('btc_deadline_guard'):
         return
     if not state.get('quote_gate') or state['phase'] != 'outgoing_started':
@@ -29,11 +34,13 @@ def protect(path, state, rpc, save):
     intent = state.get('btc_close_intent')
     if intent is None:
         spend = rpc(cli, 'xbt-spend-info', payment_hash)
+        if bounded:
+            bounds.gate(state, spend)
         if spend['payment_hash'] != payment_hash or spend['binding'] != state['btc_binding']:
             raise RuntimeError('deadline held HTLC binding mismatch')
         if pinned is not None and spend['cltv_expiry'] != state['btc_incoming_pin']['expiry']:
             raise RuntimeError('deadline expiry differs from incoming funding pin')
-        if spend['cltv_expiry'] - info['blockheight'] > (pilot.CLOSE_BLOCKS if live else 30):
+        if spend['cltv_expiry'] - info['blockheight'] > threshold:
             return
         matches = [c for c in channels if c.get('short_channel_id') == state['btc_binding'][0]]
         if len(matches) != 1:

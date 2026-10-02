@@ -12,6 +12,24 @@ import sys
 import time
 
 
+# Kept self-contained: launchers copy this plugin beside its journal.
+ROUTED_PROFILE = 'live-routed-receive-v1'
+
+
+def routed_terms(quote):
+    delay = quote['xbt_route_delay']
+    digest = quote['xbt_route_digest']
+    if (type(delay) is not int or not 1 <= delay <= 1842
+            or type(quote['min_cltv_delta']) is not int
+            or quote['min_cltv_delta'] != delay + 150
+            or type(quote['max_cltv_delta']) is not int
+            or quote['max_cltv_delta'] != 2016
+            or not isinstance(digest, str) or len(digest) != 64
+            or len(bytes.fromhex(digest)) != 32 or digest != digest.lower()
+            or quote.get('btc_channel_policy') != 'any-normal-v1'):
+        raise ValueError('routed quote timing or route commitment differs')
+
+
 def save(path, quotes):
     temporary = path.with_suffix('.tmp')
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -119,7 +137,7 @@ def main():
         if method == 'init':
             network = params['configuration']['network']
             live_profile = params.get('options', {}).get('xbt-live-pilot')
-            live = network == 'bitcoin' and live_profile in ('live-pilot-v1', 'live-pilot-v2', 'live-market-v1', 'live-market-v2')
+            live = network == 'bitcoin' and live_profile in ('live-pilot-v1', 'live-pilot-v2', 'live-market-v1', 'live-market-v2', ROUTED_PROFILE)
             active = network == 'regtest' or live
             reply(request, {} if active else {'disable': 'requires regtest or explicit live pilot'})
             continue
@@ -135,19 +153,25 @@ def main():
                     required.add('pilot')
                     if quote.get('pilot') == 'live-pilot-v2':
                         required.update(('replaces', 'btc_channel'))
-                    if quote.get('pilot') in ('live-market-v1', 'live-market-v2'):
+                    if quote.get('pilot') in ('live-market-v1', 'live-market-v2', ROUTED_PROFILE):
                         required.update(('oracle_digest', 'controller_id'))
-                        required.add('btc_channel_policy' if quote['pilot'] == 'live-market-v2' else 'btc_channel')
+                        required.add('btc_channel_policy' if quote['pilot'] in ('live-market-v2', ROUTED_PROFILE) else 'btc_channel')
                 elif 'btc_channel_policy' in quote:
                     required.add('btc_channel_policy')
+                routed = (quote.get('pilot') == ROUTED_PROFILE or
+                          (not live and any(k in quote for k in ('xbt_route_delay', 'xbt_route_digest'))))
+                if routed:
+                    required.update(('xbt_route_delay', 'xbt_route_digest'))
                 if 'btc_channel_policy' in quote and quote['btc_channel_policy'] != 'any-normal-v1':
                     raise ValueError('unsupported incoming channel policy')
                 if set(quote) != required:
                     raise ValueError('unexpected quote fields')
+                if routed:
+                    routed_terms(quote)
                 if live:
                     limits = {'live-pilot-v1': (1000000, 2000000),
                               'live-pilot-v2': (2000000, 4000000)}
-                    if quote['pilot'] in ('live-market-v1', 'live-market-v2'):
+                    if quote['pilot'] in ('live-market-v1', 'live-market-v2', ROUTED_PROFILE):
                         for key, cap in (('btc_amount_msat', 10000000), ('xbt_amount_msat', 500000000)):
                             if type(quote[key]) is not int or quote[key] % 1000 or not 0 < quote[key] <= cap:
                                 raise ValueError('market amount outside hard limits')
@@ -159,7 +183,7 @@ def main():
                     elif (quote['pilot'] not in limits
                           or (quote['btc_amount_msat'], quote['xbt_amount_msat']) != limits[quote['pilot']]):
                         raise ValueError('live pilot limits mismatch')
-                    if quote['min_cltv_delta'] != 288 or quote['max_cltv_delta'] != 2016:
+                    if not routed and (quote['min_cltv_delta'] != 288 or quote['max_cltv_delta'] != 2016):
                         raise ValueError('live pilot limits mismatch')
                     if quote['payment_hash'] not in quotes:
                         if quote['pilot'] != live_profile:
@@ -172,7 +196,7 @@ def main():
                                     or not previous.get('binding')
                                     or quote['btc_channel'] != previous['binding'][0]):
                                 raise ValueError('replacement requires the sole failed v1 quote on its original channel')
-                        elif quote['pilot'] in ('live-market-v1', 'live-market-v2'):
+                        elif quote['pilot'] in ('live-market-v1', 'live-market-v2', ROUTED_PROFILE):
                             now = int(time.time())
                             if not now < quote['expires_at'] <= now + 120:
                                 raise ValueError('market quote expiry exceeds two minutes')
@@ -296,7 +320,9 @@ def main():
                                 'btc_channel': terms.get('btc_channel'),
                                 'btc_channel_policy': terms.get('btc_channel_policy'),
                                 'oracle_digest': terms.get('oracle_digest'),
-                                'controller_id': terms.get('controller_id')})
+                                'controller_id': terms.get('controller_id'),
+                                'xbt_route_delay': terms.get('xbt_route_delay'),
+                                'xbt_route_digest': terms.get('xbt_route_digest')})
             elif method == 'xbt-fail':
                 payment_hash = params[0] if isinstance(params, list) else params['payment_hash']
                 binding = params[1] if isinstance(params, list) else params['binding']
