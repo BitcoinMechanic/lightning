@@ -14,6 +14,8 @@ from swap_rpc import RPC
 from swap_controller import run as reconcile, save
 from swap_invoice import unsigned_invoice
 from swap_watch import watch
+from customer_errors import channel_reason
+from quote_refusal import QuoteRefused
 import live_pilot as pilot
 
 
@@ -99,10 +101,19 @@ def create(config, invoice, btc_sats, directory):
     # Allow time for submission after the BTC quote expires.
     expires = min(now + 600, decoded['created_at'] + decoded['expiry'] - 60)
     if expires < now + 30:
+        if market:
+            raise QuoteRefused('invoice_expiring')
         raise ValueError('XBT invoice needs at least 90 seconds remaining')
     if decoded['min_final_cltv_expiry'] > 40:
         raise ValueError('receiver CLTV exceeds this experimental policy')
-    channels = [c for c in RPC.call(config['xbt_cli'], 'listpeerchannels')['channels']
+    all_channels = RPC.call(config['xbt_cli'], 'listpeerchannels')['channels']
+    if market:
+        bound = [c for c in all_channels if c.get('short_channel_id') == config['market']['xbt_channel']
+                 and c['peer_id'] == decoded['payee']]
+        reason = channel_reason(bound, 'xbt', amount)
+        if reason:
+            raise QuoteRefused(reason)
+    channels = [c for c in all_channels
                 if c['peer_id'] == decoded['payee'] and c['state'] == 'CHANNELD_NORMAL'
                 and c.get('short_channel_id') and c.get('spendable_msat', 0) >= amount]
     if len(channels) != 1:

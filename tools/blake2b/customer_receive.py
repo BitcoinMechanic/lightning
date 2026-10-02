@@ -8,6 +8,7 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
+from customer_errors import CustomerError
 from quote_refusal import QuoteRefused
 from receive_service import FORMAT, FIELDS
 from reverse_customer import locked
@@ -129,6 +130,9 @@ def main():
         print(json.dumps(workflow(cli, a.directory.expanduser().absolute(), private_load(a.token_file.expanduser()),
                                   a.url, a.xbt_sats, a.max_btc_sats, retry_quote=a.retry_quote)))
         return 0
+    except CustomerError as error:
+        print(json.dumps(error.public()))
+        return 1
     except QuoteRefused as error:
         print(json.dumps(dict(error.public(), message=str(error), next_step='Correct the cause; rerun the same command with --retry-quote.')))
         return 1

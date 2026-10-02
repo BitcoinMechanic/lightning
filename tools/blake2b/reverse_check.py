@@ -10,6 +10,7 @@ import stat
 import subprocess
 import time
 
+from customer_errors import channel_reason
 from market_check import minimum_sats
 from neoxa_oracle import fetch
 from reverse_oracle import estimate
@@ -23,7 +24,9 @@ READ_METHODS = {'getinfo', 'decode', 'getroutes', 'listpeerchannels', 'listfunds
 
 
 class CheckError(ValueError):
-    pass
+    def __init__(self, message, public_reason=None):
+        super().__init__(message)
+        self.public_reason = public_reason
 
 
 class DiagnosticError(CheckError):
@@ -136,7 +139,7 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
         raise CheckError('invoice final CLTV exceeds inspection limit of 144 blocks')
     expires = decoded['created_at'] + decoded['expiry']
     if expires - int(now()) < 120:
-        raise CheckError('invoice expired or has less than two minutes remaining')
+        raise CheckError('invoice expired or has less than two minutes remaining', 'invoice_expiring')
 
     def normal(c):
         return c.get('state') == 'CHANNELD_NORMAL' and c.get('peer_connected') is True and not c.get('htlcs')
@@ -149,8 +152,9 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
                 continue
             matches = [c for c in read(role, 'listpeerchannels')['channels']
                        if c.get('peer_id') == infos[peer]['id'] and c.get('state') == 'CHANNELD_NORMAL']
-            if len(matches) != 1 or not normal(matches[0]):
-                raise CheckError('need one connected normal XBT channel without pending HTLCs at both ends')
+            readiness = channel_reason(matches, 'xbt')
+            if readiness:
+                raise CheckError('need one connected normal XBT channel without pending HTLCs at both ends', readiness)
             pair[role] = matches[0]
         spendable = None
         if payer_id is None:
@@ -204,6 +208,10 @@ def check(invoice, clis, *, rpc=RPC.call, market_fetch=fetch,
         except subprocess.CalledProcessError as error:
             if not no_route(error):
                 raise
+            candidates = [c for c in read('btc', 'listpeerchannels')['channels']
+                          if c.get('state') == 'CHANNELD_NORMAL']
+            if candidates and all(c.get('peer_connected') is False for c in candidates):
+                raise CheckError('all normal BTC peers are disconnected', 'btc_peer_disconnected')
             return dict(result, reason='no single-part BTC route within inspection limits')
     with diagnostic('btc.first_hop'):
         first = route[0]

@@ -17,7 +17,7 @@ from service_manager import private_load
 from swap_rpc import RPC
 from swap_controller import save
 from reverse_controller import run as reconcile
-from reverse_check import check, private_invoice, DiagnosticError
+from reverse_check import check, private_invoice, DiagnosticError, CheckError
 from quote_refusal import QuoteRefused, market_refusal
 from reverse_route import plan
 from reverse_policy import inspect_remote_policies
@@ -68,6 +68,10 @@ def _create(settings, invoice, directory, rpc=RPC.call, inspector=check):
         if reason is None:
             raise
         raise QuoteRefused(reason) from None
+    except CheckError as error:
+        if error.public_reason:
+            raise QuoteRefused(error.public_reason) from None
+        raise
     refusal_reasons = {
         'insufficient XBT payer-to-operator liquidity': 'insufficient_xbt_liquidity',
         'insufficient BTC first-hop liquidity including routing fee': 'insufficient_btc_liquidity',

@@ -124,7 +124,7 @@ class ReceiveQuotes:
                     raise ValueError('operator identity changed')
                 service.create(config, request['xbt_invoice'], None, directory)
             except ValueError as error:
-                code = {
+                code = error.reason if isinstance(error, QuoteRefused) else {
                     'oracle BTC amount exceeds operator cap': 'btc_price_cap',
                     'replacement cost exceeds slippage limit': 'market_slippage',
                     'limit ask differs from ticker beyond reference gap limit': 'market_reference_gap',
@@ -138,6 +138,8 @@ class ReceiveQuotes:
                     stored.update(phase='refused', reason=code)
                     save(path, stored)
                     raise QuoteRefused(code) from None
+                if isinstance(error, QuoteRefused):
+                    raise ValueError('quote creation outcome uncertain') from None
                 raise
         with lock(directory/'service.lock'):
             quote = private_load(directory/'quote.json')

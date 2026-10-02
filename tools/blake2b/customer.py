@@ -10,6 +10,7 @@ import time
 
 import customer_receive
 import customer_swap
+from customer_errors import CustomerError
 from quote_refusal import QuoteRefused
 from reverse_check import private_invoice
 from reverse_customer import locked, result
@@ -195,6 +196,8 @@ def main(argv=None):
             answer = start(root, intent, retry=a.retry_quote)
         print(json.dumps(answer))
         return 0
+    except CustomerError as error:
+        print(json.dumps(error.public()))
     except QuoteRefused as error:
         print(json.dumps(dict(error.public(), message=str(error),
                              next_step='Correct the cause and resume the same attempt with --retry-quote.')))

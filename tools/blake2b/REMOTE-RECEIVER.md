@@ -255,3 +255,30 @@ Resume older attempts with their original scripts and arguments. No records
 are migrated. Override `--lightning-dir`, `--token-file` or `--url` on send or
 receive if needed; resume uses saved values. The global `--root` option must
 precede the subcommand.
+
+## Customer diagnostics
+
+Customer commands report static public reason codes without returning raw RPC
+errors, credentials, invoices, or node identities. Common quote refusals now
+distinguish disconnected peers, unavailable channels, pending HTLCs, insufficient
+inbound/outbound liquidity, and destination invoices too close to expiry.
+A BTC no-route failure is identified as a disconnected-peer problem only when
+all normal local BTC channels explicitly report disconnected. Otherwise the
+existing bounded-route refusal remains applicable.
+
+- `api_unreachable`: check the SSH tunnel and operator quote service.
+- `api_credentials`: check the installed customer credential.
+- `api_outcome_unknown`: preserve the original attempt and use resume to
+  reconcile its original request. A timeout does not prove the request failed.
+- `btc_peer_disconnected` / `xbt_peer_disconnected`: reconnect the relevant
+  Lightning peer. In this pilot, opening Zeus restores its BTC connection.
+- `*_channel_busy`: wait for pending HTLCs to resolve.
+- `insufficient_*_receive_liquidity` / `insufficient_*_send_liquidity`: restore
+  liquidity in the stated direction before explicitly retrying the quote.
+- `invoice_expiring`: the destination invoice needs renewal; preserve the old
+  attempt and establish its outcome before creating a replacement.
+
+Only a definite refusal before quote-directory creation is recorded as
+retryable with `--retry-quote`. Existing uncertain request records are not
+reclassified. The API and recovery services need restarting after installing
+these diagnostics; Lightning nodes do not.

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from service_manager import private_load
+from customer_errors import CustomerError
 from quote_refusal import QuoteRefused
 from reverse_check import private_invoice
 from reverse_request import request_quote
@@ -71,6 +72,9 @@ def main():
                           args.url, args.max_xbt_sats, args.max_delay, retry_quote=args.retry_quote)
         print(json.dumps(answer))
         return 0
+    except CustomerError as error:
+        print(json.dumps(error.public()))
+        return 1
     except QuoteRefused as error:
         print(json.dumps(dict(error.public(), message=str(error),
                              next_step='Correct the cause, then rerun the same command with --retry-quote.')))

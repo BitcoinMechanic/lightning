@@ -1,5 +1,6 @@
 """Request a bounded quote from the authenticated loopback API. Never pays."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import time
 import urllib.request
 import urllib.error
 from quote_refusal import QuoteRefused, REASONS
+from customer_errors import CustomerError
 from urllib.parse import urlsplit
 
 from service_manager import private_load
@@ -32,6 +34,8 @@ def transport(url, token, body, endpoint_path="/v1/quote"):
         with opener.open(request, timeout=90) as response:
             raw = response.read(65537)
     except urllib.error.HTTPError as error:
+        if error.code == 401:
+            raise CustomerError('api_credentials') from None
         if error.code == 409:
             raw = error.read(4097)
             try:
@@ -43,10 +47,18 @@ def transport(url, token, body, endpoint_path="/v1/quote"):
                     and value['reason'] in REASONS and value['quote_created'] is False
                     and value['payment_started'] is False):
                 raise QuoteRefused(value['reason']) from None
-        raise ValueError('quote request outcome unavailable') from None
+        raise CustomerError('api_outcome_unknown') from None
+    except urllib.error.URLError as error:
+        code = 'api_unreachable' if isinstance(error.reason, ConnectionRefusedError) or getattr(error.reason, 'errno', None) == errno.ECONNREFUSED else 'api_outcome_unknown'
+        raise CustomerError(code) from None
+    except (TimeoutError, ConnectionError):
+        raise CustomerError('api_outcome_unknown') from None
     if len(raw) > 65536:
-        raise ValueError('quote response too large')
-    return json.loads(raw)
+        raise CustomerError('api_outcome_unknown')
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise CustomerError('api_outcome_unknown') from None
 
 
 def request_quote(invoice, credentials, url, directory, max_xbt_sats, send=transport, retry_refused=False):

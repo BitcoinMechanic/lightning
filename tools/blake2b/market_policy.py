@@ -3,6 +3,8 @@ import hashlib
 import json
 import time
 
+from customer_errors import channel_reason
+from quote_refusal import QuoteRefused
 import live_pilot as pilot
 from neoxa_oracle import estimate, fetch
 
@@ -51,13 +53,17 @@ def state_amounts(state):
 
 def channels(config, amount, btc_amount, rpc):
     p = policy(config)
-    pilot.incoming_preflight(config, p['btc_channel'], rpc, amount_msat=btc_amount)
+    incoming = [c for c in rpc(config['btc_cli'], 'listpeerchannels')['channels']
+                if c.get('short_channel_id') == p['btc_channel']]
+    reason = channel_reason(incoming, 'btc', btc_amount, 'receivable_msat')
+    if reason:
+        raise QuoteRefused(reason)
+    pilot.require_untrimmed(incoming[0], btc_amount)
     matches = [c for c in rpc(config['xbt_cli'], 'listpeerchannels')['channels']
                if c.get('short_channel_id') == p['xbt_channel'] and c['peer_id'] == p['xbt_peer']]
-    if (len(matches) != 1 or matches[0]['state'] != 'CHANNELD_NORMAL'
-            or not matches[0]['peer_connected'] or matches[0].get('htlcs')
-            or matches[0]['spendable_msat'] < amount):
-        raise RuntimeError('bound XBT channel not ready or lacks balance')
+    reason = channel_reason(matches, 'xbt', amount)
+    if reason:
+        raise QuoteRefused(reason)
     pilot.require_untrimmed(matches[0], amount)
     pilot.require_reserves(config, rpc)
 

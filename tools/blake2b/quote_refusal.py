@@ -1,5 +1,16 @@
 """Public reason codes for definite refusals before quote creation."""
 REASONS = {
+    'btc_peer_disconnected': 'The required BTC peer is disconnected. Reconnect it before retrying the quote.',
+    'xbt_peer_disconnected': 'The required XBT peer is disconnected. Reconnect it before retrying the quote.',
+    'btc_channel_unavailable': 'The required BTC channel is unavailable or not yet normal.',
+    'xbt_channel_unavailable': 'The required XBT channel is unavailable or ambiguous.',
+    'btc_channel_busy': 'The required BTC channel has pending HTLCs. Wait for them to resolve.',
+    'xbt_channel_busy': 'The required XBT channel has pending HTLCs. Wait for them to resolve.',
+    'insufficient_btc_receive_liquidity': 'Insufficient BTC inbound channel liquidity for this receipt.',
+    'insufficient_xbt_receive_liquidity': 'Insufficient XBT inbound channel liquidity for this payment.',
+    'insufficient_btc_send_liquidity': 'Insufficient BTC outbound channel liquidity for this payment.',
+    'insufficient_xbt_send_liquidity': 'Insufficient XBT outbound channel liquidity for this receipt.',
+    'invoice_expiring': 'The destination invoice has expired or has too little time remaining.',
     'btc_price_cap': 'The BTC quote exceeds the receiving price cap.',
     'market_reference_gap': 'Ordinary exchange limit prices differ too far from the ticker price.',
     'market_slippage': 'Exchange prices exceed the allowed slippage; request a quote when the market meets policy.',
