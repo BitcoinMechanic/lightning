@@ -17,6 +17,7 @@ from swap_rpc import RPC
 import swap_service as service
 import receive_selection as selection
 import routed_receive_service as routed_service
+import live_receive as live_service
 
 FORMAT = 'btc-xbt-receive-offer-v1'
 FIELDS = {'format', 'xbt_invoice_sha256', 'btc_invoice', 'btc_sats', 'xbt_sats', 'expires_at'}
@@ -40,6 +41,8 @@ def configuration(settings):
     if 'receive_policy' in settings:
         if 'receive_config' in settings:
             raise ValueError('choose one receiving policy')
+        if settings['receive_policy'].get('profile') == live_service.PROFILE:
+            return live_service.configuration(settings)
         return (routed_service.configuration(settings)
                 if routed_service.is_config(settings['receive_policy']) else selection.configuration(settings))
     config = copy.deepcopy(settings['receive_config'])
@@ -63,7 +66,8 @@ class ReceiveQuotes:
     def __init__(self, settings, auto_process=False):
         self.settings = settings
         self.config = configuration(settings)
-        self.backend = routed_service if routed_service.is_config(self.config) else service
+        self.backend = (live_service if self.config.get('profile') == live_service.PROFILE
+                        else routed_service if routed_service.is_config(self.config) else service)
         self.auto_process = auto_process
         self.root = Path(settings['swap_root']).resolve()
         self.records = self.root/'receive-requests'
@@ -242,7 +246,9 @@ def process(directory, settings, rpc=RPC.call, controller=run, now=time.time):
             raise ValueError('authorization differs')
         if quote['terms']['expires_at'] <= int(now()):
             return {'outcome': 'authorization_expired'}
-        if routed_service.is_config(config):
+        if config.get('profile') == live_service.PROFILE:
+            live_service.preflight(quote, rpc)
+        elif routed_service.is_config(config):
             routed_service.preflight(quote, rpc)
         if state is None:
             ph = quote['terms']['payment_hash']

@@ -8,6 +8,10 @@ AMOUNT = 100000000
 
 
 def enabled(state):
+    if state.get('profile') == 'live-routed-receive-v1' or state.get('xbt_routing') == 'bounded-xbt-live-v1':
+        from live_receive import validate_state
+        validate_state(state)
+        return True
     if 'xbt_routing' not in state:
         return False
     if (state.get('xbt_routing') not in (MODE, bounds.MODE) or state.get('profile', 'regtest') != 'regtest'
@@ -37,6 +41,10 @@ def plan(cli, decoded, source, rpc, max_fee_msat=10000):
 def verify(state, rpc):
     if not enabled(state):
         return
+    if state['xbt_routing'] == 'bounded-xbt-live-v1':
+        from live_receive import verify_state
+        verify_state(state, rpc)
+        return
     policy = state['xbt_route_policy']
     validate(state['route'], state['xbt_amount_msat'], policy)
     if state['xbt_amount_msat'] != AMOUNT:
@@ -57,6 +65,9 @@ def verify(state, rpc):
 
 
 def preflight(state, decoded, remaining, rpc):
+    if state.get('xbt_routing') == 'bounded-xbt-live-v1':
+        from live_receive import pre_spend
+        return pre_spend(state, decoded, remaining, rpc)
     invoice(decoded)
     policy = state['xbt_route_policy']
     validate(state['route'], AMOUNT, policy)
@@ -80,7 +91,8 @@ def preflight(state, decoded, remaining, rpc):
 
 
 def check_payment(state, payment):
-    for key, value in dict(payment_hash=state['payment_hash'], amount_msat=AMOUNT,
+    amount = state['xbt_amount_msat'] if state.get('xbt_routing') == 'bounded-xbt-live-v1' else AMOUNT
+    for key, value in dict(payment_hash=state['payment_hash'], amount_msat=amount,
                            amount_sent_msat=state['route'][0]['amount_msat'],
                            destination=state['xbt_route_policy']['destination'],
                            bolt11=state['xbt_invoice']).items():

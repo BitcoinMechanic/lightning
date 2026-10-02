@@ -105,6 +105,7 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
+        self.assertIn('unit-live-receive', {case.name for case in catalog})
         self.assertIn('unit-routed-receive-check', {case.name for case in catalog})
         self.assertEqual(sum(c.live for c in catalog), 77)
         bounded = [c for c in catalog if c.name.startswith('receive-bounded-api-')]

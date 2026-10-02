@@ -42,7 +42,10 @@ def check_spend(state):
             or info['binding'] != state['btc_binding']
             or info['xbt_amount_msat'] != state['xbt_amount_msat']):
         raise RuntimeError('spend quote identity or amount mismatch')
-    if pilot.is_live(state):
+    if state.get('profile') == pilot.PROFILE_ROUTED:
+        from live_receive import check_gate
+        check_gate(state, info)
+    elif pilot.is_live(state):
         if (info.get('pilot') != state['profile'] or info.get('btc_amount_msat') != pilot.amounts(state)[0]
                 or info['min_cltv_delta'] != pilot.MIN_CLTV
                 or info['max_cltv_delta'] != pilot.MAX_CLTV):

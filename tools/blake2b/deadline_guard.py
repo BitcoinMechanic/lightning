@@ -36,6 +36,9 @@ def protect(path, state, rpc, save):
         spend = rpc(cli, 'xbt-spend-info', payment_hash)
         if bounded:
             bounds.gate(state, spend)
+        elif state.get('profile') == pilot.PROFILE_ROUTED:
+            from live_receive import check_gate
+            check_gate(state, spend)
         if spend['payment_hash'] != payment_hash or spend['binding'] != state['btc_binding']:
             raise RuntimeError('deadline held HTLC binding mismatch')
         if pinned is not None and spend['cltv_expiry'] != state['btc_incoming_pin']['expiry']:

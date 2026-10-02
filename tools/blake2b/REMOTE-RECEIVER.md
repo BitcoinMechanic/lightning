@@ -728,3 +728,44 @@ A block-count threshold still cannot guarantee relative progress, timely
 confirmation or recovery on independent chains. Old disposable bounded fixture
 records lack the new commitment/guard fields; generate new regtest runs rather
 than modifying those records. No live records are migrated by applying this patch.
+
+
+### Explicit live routed receiving integration
+
+The `live-routed-receive-v1` producer and controller support native XBT
+invoices, oracle-priced BTC offers, authenticated API requests, and authorized
+background processing. Applying this code does not install a live policy,
+change service units, restart nodes, or enable the profile in the BTC quote
+gate. Both the explicit receive policy and the gate opt-in are required.
+
+The policy pins operator identities and RPC commands, amount caps (at most
+10,000 BTC sats and 500,000 XBT sats), margin, an XBT routing-fee allowance
+(at most 100 sats), and a route-delay cap. Pricing includes the full routing-fee
+allowance; the XBT amount cap includes that allowance too. Quotes bind the
+original route, first-hop funding output, invoice, oracle snapshot, and timing.
+No customer wallet RPC is used by the operator.
+
+Before submission the controller rechecks the held BTC binding, current BTC
+height, invoice expiry, reserves, outgoing funding pin, liquidity, untrimmed
+HTLC amount, and advertised remote policies. Unknown private-hop HTLC limits
+remain unsupported, as do multipart routes and XBT payment metadata. An
+existing outgoing attempt prevents a new submission.
+
+Timing uses the bounded candidate policy: outgoing XBT route delay plus six
+submission blocks and 144 recovery blocks, with 24 further blocks in the BTC
+invoice for quote drift. This assumes an expected 1:1 chain pace, not a
+relative-progress guarantee. Pending recovery requests closure of the exact
+pinned BTC channel at 72 remaining blocks; its recorded intent survives a lost
+RPC reply. A close request does not itself guarantee timely confirmation.
+
+Submission is checkpointed before sending. Recovery reconciles the original
+attempt without repricing, replanning, or resending, including after quote
+expiry or changes to admission policy. Terminal outcome and preimage checks
+remain mandatory before BTC resolution. Per-quote authorization is required
+to originate a payment; recovery of an already submitted payment does not
+require renewed authorization.
+
+`test_live_receive.py` exercises this integration with simulated operator RPCs,
+including a real authenticated loopback HTTP request and background worker.
+It does not spend live funds. The funded bounded regtest and deadline cases
+remain the chain-level integration checks.

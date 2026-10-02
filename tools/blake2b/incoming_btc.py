@@ -14,7 +14,7 @@ PIN_FIELDS = ('channel_id', 'funding_txid', 'funding_outnum')
 
 
 def enabled(state):
-    required = state.get('profile') == pilot.PROFILE_MARKET_ANY
+    required = state.get('profile') in (pilot.PROFILE_MARKET_ANY, pilot.PROFILE_ROUTED)
     if required or 'btc_channel_policy' in state:
         if state.get('btc_channel_policy') != POLICY or 'btc_channel' in state:
             raise RuntimeError('incoming channel policy mismatch')
