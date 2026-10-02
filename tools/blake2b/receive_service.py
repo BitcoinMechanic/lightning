@@ -16,6 +16,7 @@ from swap_controller import save, run
 from swap_rpc import RPC
 import swap_service as service
 import receive_selection as selection
+import routed_receive_service as routed_service
 
 FORMAT = 'btc-xbt-receive-offer-v1'
 FIELDS = {'format', 'xbt_invoice_sha256', 'btc_invoice', 'btc_sats', 'xbt_sats', 'expires_at'}
@@ -39,7 +40,8 @@ def configuration(settings):
     if 'receive_policy' in settings:
         if 'receive_config' in settings:
             raise ValueError('choose one receiving policy')
-        return selection.configuration(settings)
+        return (routed_service.configuration(settings)
+                if routed_service.is_config(settings['receive_policy']) else selection.configuration(settings))
     config = copy.deepcopy(settings['receive_config'])
     if (set(config) != {'profile', 'btc_cli', 'xbt_cli', 'market'}
             or config['profile'] != 'live-market-v1'
@@ -61,6 +63,7 @@ class ReceiveQuotes:
     def __init__(self, settings, auto_process=False):
         self.settings = settings
         self.config = configuration(settings)
+        self.backend = routed_service if routed_service.is_config(self.config) else service
         self.auto_process = auto_process
         self.root = Path(settings['swap_root']).resolve()
         self.records = self.root/'receive-requests'
@@ -139,9 +142,9 @@ class ReceiveQuotes:
                     else:
                         save(payment_index, {'request_id': key})
                     selection.check_channel(stored['selection'])
-                if service.identities(config) != self.settings['node_ids']:
+                if self.backend.identities(config) != self.settings['node_ids']:
                     raise ValueError('operator identity changed')
-                service.create(config, request['xbt_invoice'], None, directory)
+                self.backend.create(config, request['xbt_invoice'], None, directory)
             except ValueError as error:
                 code = error.reason if isinstance(error, QuoteRefused) else {
                     'oracle BTC amount exceeds operator cap': 'btc_price_cap',
@@ -180,7 +183,7 @@ class ReceiveQuotes:
                     or quote['terms']['xbt_invoice'] != request['xbt_invoice']):
                 raise ValueError('saved quote differs from request')
             if 'btc_invoice' not in quote:
-                service.publish(directory)
+                self.backend.publish(directory)
                 quote = private_load(directory/'quote.json')
             if stored['auto_process']:
                 permit = directory/'receive-authorization.json'
@@ -239,6 +242,8 @@ def process(directory, settings, rpc=RPC.call, controller=run, now=time.time):
             raise ValueError('authorization differs')
         if quote['terms']['expires_at'] <= int(now()):
             return {'outcome': 'authorization_expired'}
+        if routed_service.is_config(config):
+            routed_service.preflight(quote, rpc)
         if state is None:
             ph = quote['terms']['payment_hash']
             gate = rpc(settings['btc_cli'], 'xbt-quote-status', ph)

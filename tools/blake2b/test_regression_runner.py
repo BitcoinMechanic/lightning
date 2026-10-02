@@ -89,7 +89,13 @@ class RunnerTests(unittest.TestCase):
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 64)
+        self.assertEqual(sum(c.live for c in catalog), 69)
+        api = [c for c in catalog if c.name.startswith('receive-routed-api-')]
+        self.assertEqual(len(api), 2)
+        self.assertTrue(all('--api' in c.command for c in api))
+        delivery = [c for c in catalog if c.name.startswith('receive-routed-xbt-')]
+        self.assertEqual(len(delivery), 3)
+        self.assertEqual(sum('--fee-limit' in c.command for c in delivery), 1)
         customers = [c for c in catalog if c.name.startswith('reverse-customer-routed-xbt-')]
         self.assertEqual(len(customers), 2)
         for case in customers:

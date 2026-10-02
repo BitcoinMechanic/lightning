@@ -426,3 +426,89 @@ millisatoshi fields for exact accounting of fractional-sat routing fees.
 
 This option changes customer payment policy only. It does not migrate the
 operator's live admission policy or change its authentication configuration.
+
+
+### Public routed XBT delivery: controller regtest
+
+`routed_receive_regtest.py` exercises BTC payer -> BTC coordinator, then XBT
+coordinator -> XBT relay -> XBT receiver. There is no direct XBT channel between
+the coordinator and receiver. The public route comes from `getroutes` with a
+10-sat maximum fee, 80-block maximum route delay and one payment part. The relay
+charges 5 XBT sats. This fixture exchanges 100000 BTC sats for 100000 XBT sats
+at a fixed test price; it does not consult the oracle.
+
+The controller's explicit `public-xbt-regtest-v1` mode validates both operator
+networks and identities, the signed XBT invoice, route endpoint, fee and delay
+limits, and the first-hop balance including fees. It requires the incoming BTC
+HTLC to have at least the outgoing route delay plus 60 remaining blocks. That
+is a controlled-regtest margin, not a live cross-chain timing policy. The route
+and first-hop funding pin are saved before submission. Recovery checks the
+original outgoing invoice, destination, amount and amount sent, including fees;
+pending or unknown outcomes never trigger a resend or BTC refund.
+
+Success and rejection cases stop and restart both coordinators while pending,
+then reconcile through fresh controller processes. They verify all six channel
+balances, the receiver invoice, relay fee and absence of pending HTLCs. The fee
+refusal case lowers the saved fee cap below the planned fee: two controller
+runs refuse without spending, and only the test harness returns the unspent BTC.
+
+```sh
+.venv/bin/python tools/blake2b/test_outgoing_xbt.py -v
+
+for mode in success fail-outgoing fee-limit; do
+  flags=()
+  if [ "$mode" != success ]; then flags=("--$mode"); fi
+  .venv/bin/python tools/blake2b/routed_receive_regtest.py \
+    --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli \
+    "${flags[@]}" || break
+done
+```
+
+This is the controller foundation only. The receiving API's existing direct
+selection remains unchanged. Private XBT route hints, routed market pricing,
+and live activation require subsequent integration and tests. No live service
+configuration or wallet is changed by these regtests.
+
+### Routed receiving API fixture (regtest only)
+
+The explicit `routed-receive-regtest-v1` receive policy connects the authenticated
+`/v1/receive` API to public-route XBT delivery and the existing authorized
+background worker. It accepts a 100,000-XBT-sat regtest invoice, selects one
+public route of at most four hops, and pins its first funding output. There is
+no fixed customer or incoming BTC channel. The actual committed BTC HTLC and
+funding output are pinned before outgoing submission.
+
+The saved Neoxa ask estimate prices the receiver amount **plus the full outgoing
+XBT routing-fee allowance**, rounded up to whole XBT sats before pricing. The
+XBT amount cap includes that allowance; the BTC quote must fit both operator and
+request caps. The receiver still gets exactly its invoice amount. The quote
+stores the audit, route, fee cap and funding pin under the worker authorization
+digest. Worker steps never fetch another price or select another route. Unused
+fee allowance is not retrospectively refunded. Exchange fees and the BTC payer's
+own routing fees are outside this estimate.
+
+This fixture policy is separate from live receiving profiles. It uses native
+`regtest`/`xbt-regtest` identities and signed invoices, refuses mainnet operators,
+and does not enable routed delivery for live services. Private route hints,
+multipath, automatic route retries and live activation are not added here.
+
+Run from the repository root:
+
+```sh
+.venv/bin/python tools/blake2b/test_routed_receive_service.py -v
+
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --api
+
+.venv/bin/python tools/blake2b/routed_receive_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --api --fail-outgoing
+```
+
+The funded tests replace only the exchange response with deterministic data:
+100,000 receiver sats plus a 10-sat fee allowance costs 1,501 BTC sats at the
+fixture price (1,500 without the allowance). The selected route actually costs
+5 XBT sats. Real HTTP requests produce a stable offer; fresh background-worker
+processes submit and recover the payment. Both operators restart while pending.
+The tests check all six channel-side balances, the receiver invoice, original
+payment attempt, incoming/outgoing funding pins and absence of pending HTLCs.
+Success earns the relay 5 sats; rejection restores every channel balance.

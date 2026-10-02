@@ -1,0 +1,214 @@
+"""BTC -> routed XBT controller fixture; disposable regtest, fixed price only."""
+import argparse
+import json
+from pathlib import Path
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+
+from smoke_regtest import Lab, wait_until
+from swap_controller import save
+from swap_invoice import unsigned_invoice
+from outgoing_xbt import MODE, AMOUNT, plan
+
+
+def wait_for_ready(lab, node, backend, network, expected_id):
+    """RPC/listener readiness and HTLC replay can precede chain sync."""
+    height = lab.rpc(backend['cli'], 'getblockcount')
+    def ready():
+        info = lab.rpc(node['cli'], 'getinfo')
+        if info['network'] != network or info['id'] != expected_id:
+            raise AssertionError('restarted fixture identity or network changed')
+        return (info['blockheight'] >= height
+                and not any(k.startswith('warning_') for k in info))
+    wait_until(ready, node['proc'], timeout=90)
+
+
+def run(lab, fail=False, fee_limit=False, api=False):
+    btc, xbt = lab.node('knots-btc', False), lab.node('knots-xbt', True)
+    gate, hold = lab.root/'quote_plugin.py', lab.root/'hold_htlc.py'
+    for path in (gate, hold):
+        path.write_text('#!'+sys.executable+'\n'+Path(__file__).with_name(path.name).read_text())
+        path.chmod(0o700)
+    payer = lab.lightning('payer', 'regtest', btc)
+    incoming = lab.lightning('btc-operator', 'regtest', btc, plugins=(gate,))
+    outgoing = lab.lightning('xbt-operator', 'xbt-regtest', xbt)
+    relay = lab.lightning('xbt-relay', 'xbt-regtest', xbt)
+    receiver = lab.lightning('receiver', 'xbt-regtest', xbt, plugins=(hold,))
+    nodes = (payer, incoming, outgoing, relay, receiver)
+    rpc = lambda node,*a: lab.rpc(node['cli'],*a)
+    def channel(node, peer):
+        rows=[c for c in rpc(node,'listpeerchannels')['channels'] if c['peer_id']==peer['id']]
+        assert len(rows)==1
+        return rows[0]
+    def mine(backend,count):
+        rpc(backend,'generatetoaddress',count,rpc(backend,'getnewaddress'))
+        height=rpc(backend,'getblockcount')
+        for n in ((payer,incoming) if backend is btc else (outgoing,relay,receiver)):
+            wait_until(lambda:rpc(n,'getinfo')['blockheight']>=height,n['proc'],timeout=90)
+    def fund(backend,sender,recipient):
+        mine(backend,1)
+        tx=rpc(backend,'sendtoaddress',rpc(sender,'newaddr','bech32')['bech32'],'0.02')
+        mine(backend,1)
+        wait_until(lambda:any(o['txid']==tx and o['status']=='confirmed' for o in rpc(sender,'listfunds')['outputs']),sender['proc'])
+        rpc(sender,'connect',recipient['id'],'127.0.0.1',recipient['port'])
+        funding=rpc(sender,'fundchannel',recipient['id'],'1000000sat')
+        wait_until(lambda:funding['txid'] in rpc(backend,'getrawmempool'))
+        mine(backend,6)
+        for a,b in ((sender,recipient),(recipient,sender)):
+            wait_until(lambda:channel(a,b)['state']=='CHANNELD_NORMAL',a['proc'])
+    fund(btc,payer,incoming)
+    fund(xbt,outgoing,relay)
+    fund(xbt,relay,receiver)
+    rpc(relay,'setchannel',channel(relay,receiver)['short_channel_id'],'5000msat',0)
+    assert not any(c['peer_id']==receiver['id'] for c in rpc(outgoing,'listpeerchannels')['channels'])
+    initial={(n['id'],c['short_channel_id']):c['to_us_msat'] for n in nodes for c in rpc(n,'listpeerchannels')['channels']}
+    inv=rpc(receiver,'invoice',str(AMOUNT)+'msat','routed-receive','Routed XBT delivery')
+    decoded=rpc(outgoing,'decode',inv['bolt11'])
+    def route_ready():
+        route,policy=plan(outgoing['cli'],decoded,outgoing['id'],lab.rpc)
+        return (route,policy) if route[0]['amount_msat']==AMOUNT+5000 else None
+    route,policy=wait_until(route_ready,outgoing['proc'],timeout=90)
+    assert len(route)==2 and [h['id'] for h in route]==[relay['id'],receiver['id']]
+    print('PASS: no direct receiver channel; public two-hop XBT route charges 5 sats within 10-sat cap',flush=True)
+    workflow = None
+    if api:
+        from routed_receive_api_regtest import Workflow
+        workflow = Workflow(lab, incoming, outgoing, inv['bolt11'])
+        btc_invoice = workflow.offer['btc_invoice']
+        btc_amount = workflow.offer['btc_sats'] * 1000
+        ph = inv['payment_hash']
+    else:
+        ph=inv['payment_hash']; secret=secrets.token_hex(32)
+        terms=dict(payment_hash=ph,payment_secret=secret,btc_amount_msat=100000000,xbt_amount_msat=AMOUNT,
+                   xbt_invoice=inv['bolt11'],expires_at=int(time.time())+3600,min_cltv_delta=100,max_cltv_delta=2000)
+        assert rpc(incoming,'xbt-register',json.dumps(terms))['registered']
+        btc_invoice=rpc(incoming,'signinvoice',unsigned_invoice(ph,secret))['bolt11']
+        btc_amount = 100000000
+    paying=lab.start([*payer['cli'],'-k','pay','bolt11='+btc_invoice,'retry_for=0'],lab.root/'payer-pay.log')
+    def committed(node,peer,direction):
+        expected='RCVD_ADD_ACK_REVOCATION' if direction=='in' else 'SENT_ADD_ACK_REVOCATION'
+        return any(h['payment_hash']==ph and h['state']==expected and h['direction']==direction
+                   for h in channel(node,peer).get('htlcs',[]))
+    wait_until(lambda:committed(incoming,payer,'in'),incoming['proc'])
+    wait_until(lambda:committed(payer,incoming,'out'),payer['proc'])
+    status=rpc(incoming,'xbt-quote-status',ph)
+    assert status['phase']=='held'
+    if api:
+        path = workflow.directory/'state.json'
+        state = workflow.quote['controller']
+        controller = workflow.controller
+    else:
+        path=lab.root/'state.json'
+        state=dict(phase='prepared',quote_gate=True,payment_hash=ph,payment_secret=decoded['payment_secret'],
+                   xbt_invoice=inv['bolt11'],xbt_amount_msat=AMOUNT,btc_binding=status['binding'],
+                   btc_cli=incoming['cli'],xbt_cli=outgoing['cli'],btc_node_id=incoming['id'],
+                   xbt_routing=MODE,xbt_route_policy=policy,route=route)
+        if fee_limit: state['xbt_route_policy']['max_fee_msat']=4999
+        save(path,state)
+        cmd=[sys.executable,str(Path(__file__).with_name('swap_controller.py')),'--state',str(path)]
+        def controller(*args):
+            return subprocess.run([*cmd,*args],capture_output=True,text=True,timeout=45)
+    if fee_limit:
+        before=path.read_bytes()
+        for _ in range(2):
+            assert controller().returncode!=0
+            assert path.read_bytes()==before
+            assert rpc(outgoing,'listsendpays')['payments']==[]
+        assert rpc(incoming,'xbt-quote-status',ph)['phase']=='held'
+        assert rpc(incoming,'xbt-fail',ph,json.dumps(state['btc_binding']))['failed']==1
+        print('PASS: over-budget route refused twice before XBT send; harness returned unspent BTC',flush=True)
+    else:
+        if api:
+            # waitsendpay times out on the deliberately held receiver. The
+            # next worker step must reconcile the durable submission.
+            controller()
+            assert path.exists() and json.loads(path.read_text())['phase'] == 'outgoing_started'
+        else:
+            crashed=controller('--crash-after-sendpay')
+            assert crashed.returncode==88, 'controller did not reach submission checkpoint: '+crashed.stderr
+        wait_until(lambda:committed(outgoing,relay,'out'),outgoing['proc'])
+        wait_until(lambda:committed(receiver,relay,'in'),receiver['proc'])
+        checkpoint=json.loads(path.read_text())
+        assert checkpoint['phase']=='outgoing_started' and 'preimage' not in checkpoint
+        assert checkpoint['xbt_first_hop']['funding_txid']==channel(outgoing,relay)['funding_txid']
+        attempt=rpc(outgoing,'listsendpays')['payments'][0]
+        attempt_id=tuple(attempt.get(k) for k in ('id','groupid','partid'))
+        before=gate.with_suffix('.quotes.json').read_bytes()
+        for n in (incoming,outgoing): lab.stop(n['proc'])
+        incoming.update(lab.lightning('btc-operator','regtest',btc,plugins=(gate,)))
+        outgoing.update(lab.lightning('xbt-operator','xbt-regtest',xbt))
+        wait_for_ready(lab,incoming,btc,'regtest',state['btc_node_id'])
+        wait_for_ready(lab,outgoing,xbt,'xbt-regtest',state['xbt_route_policy']['source'])
+        rpc(payer,'connect',incoming['id'],'127.0.0.1',incoming['port'])
+        rpc(outgoing,'connect',relay['id'],'127.0.0.1',relay['port'])
+        wait_until(lambda:any(h['payment_hash']==ph for h in rpc(incoming,'xbt-held')['held']),incoming['proc'])
+        wait_until(lambda:committed(outgoing,relay,'out'),outgoing['proc'])
+        assert gate.with_suffix('.quotes.json').read_bytes()==before
+        for _ in range(2):
+            result=controller(); assert result.returncode==0,result.stderr
+            assert json.loads(result.stdout)['outcome']=='pending'
+            assert json.loads(path.read_text())==checkpoint
+        print('PASS: coordinators restarted pending; original route, funding pin and BTC binding preserved; no resend',flush=True)
+        method,field=('xbt-fail','failed') if fail else ('xbt-continue','continued')
+        assert rpc(receiver,method,ph)[field]==1
+        terminal='failed' if fail else 'complete'
+        wait_until(lambda:rpc(outgoing,'listsendpays')['payments'][0]['status']==terminal,outgoing['proc'])
+        for _ in range(2):
+            result=controller();assert result.returncode==0,result.stderr
+            assert json.loads(result.stdout)['phase']==('btc_failed' if fail else 'btc_released')
+        attempts=rpc(outgoing,'listsendpays')['payments']
+        assert len(attempts)==1 and tuple(attempts[0].get(k) for k in ('id','groupid','partid'))==attempt_id
+    failed=fail or fee_limit
+    paying.wait(timeout=40)
+    assert (paying.returncode!=0)==failed
+    deltas={k:0 for k in initial}
+    if not failed:
+        for a,b,amount in ((payer,incoming,btc_amount),(outgoing,relay,AMOUNT+5000),(relay,receiver,AMOUNT)):
+            scid=channel(a,b)['short_channel_id']
+            deltas[(a['id'],scid)]-=amount;deltas[(b['id'],scid)]+=amount
+    for n in nodes:
+        def settled():
+            channels=rpc(n,'listpeerchannels')['channels']
+            return len(channels)==sum(k[0]==n['id'] for k in initial) and all(
+                not c.get('htlcs') and c['state']=='CHANNELD_NORMAL'
+                and c['to_us_msat']==initial[(n['id'],c['short_channel_id'])]+deltas[(n['id'],c['short_channel_id'])]
+                for c in channels)
+        wait_until(settled,n['proc'])
+    paid=rpc(receiver,'listinvoices','routed-receive')['invoices'][0]
+    assert paid['status']==('unpaid' if failed else 'paid')
+    if not failed:
+        assert paid['amount_received_msat']==AMOUNT
+        assert rpc(payer,'listpays',btc_invoice)['pays'][0]['preimage']==paid['payment_preimage']
+    print('PASS: all six channel-side balances verified; no pending HTLCs; relay earned '+str(0 if failed else 5)+' sats',flush=True)
+    if api:
+        print('PASS: API authorization and fresh background workers delivered the original quote without reprice or resend', flush=True)
+    print(('Routed receive API OK (' if api else 'Routed BTC -> XBT delivery OK (')+('fee refusal' if fee_limit else 'XBT rejection' if fail else 'success')+'; public route; regtest only)',flush=True)
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--bitcoind',type=Path,required=True)
+    p.add_argument('--bitcoin-cli',type=Path,required=True)
+    modes=p.add_mutually_exclusive_group()
+    modes.add_argument('--fail-outgoing',action='store_true')
+    modes.add_argument('--fee-limit',action='store_true')
+    p.add_argument('--api',action='store_true',help='exercise authenticated quote API and background worker')
+    p.add_argument('--work-dir',type=Path)
+    a=p.parse_args();temp=None
+    if a.api and a.fee_limit: p.error('--api supports success and --fail-outgoing')
+    if a.work_dir:
+        root=a.work_dir.resolve();root.mkdir(mode=0o700,parents=True,exist_ok=False)
+    else:
+        temp=tempfile.TemporaryDirectory(prefix='cln-routed-receive-');root=Path(temp.name)
+    lab=Lab(root,str(a.bitcoind.resolve()),str(a.bitcoin_cli.resolve()))
+    print('Test directory: '+str(root),flush=True)
+    try: run(lab,a.fail_outgoing,a.fee_limit,a.api)
+    finally:
+        lab.close()
+        if temp:temp.cleanup()
+
+
+if __name__=='__main__': main()

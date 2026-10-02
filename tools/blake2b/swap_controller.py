@@ -18,6 +18,7 @@ import time
 from swap_rpc import RPC, wait_until
 from deadline_guard import protect
 import live_pilot as pilot
+import outgoing_xbt
 
 
 def save(path, state):
@@ -77,6 +78,9 @@ def check_spend(state):
         return 'xbt_invoice_fields_mismatch'
     if decoded['created_at'] + decoded['expiry'] <= int(time.time()):
         return 'xbt_invoice_expired'
+    if outgoing_xbt.enabled(state):
+        outgoing_xbt.preflight(state, decoded, remaining, RPC.call)
+        return None
     # This fixture only supports one direct hop. Bind that hop to the signed
     # invoice, rather than trusting a separately supplied destination/amount.
     route = state.get('route', [])
@@ -112,6 +116,7 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
     state = json.loads(path.read_text())
     if recover_only and state['phase'] == 'prepared':
         return {'phase': 'prepared', 'outcome': 'needs_manual_start'}
+    outgoing_xbt.verify(state, RPC.call)
     pilot.verify_state(state, RPC.call)
     from incoming_btc import enabled, validate_state
     if enabled(state):
@@ -129,7 +134,8 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
         RPC.call([*state['xbt_cli'], '-k'], 'sendpay',
                 'route=' + json.dumps(state['route']),
                 'payment_hash=' + payment_hash,
-                'payment_secret=' + state['payment_secret'])
+                'payment_secret=' + state['payment_secret'],
+                *(['bolt11=' + state['xbt_invoice']] if outgoing_xbt.enabled(state) else []))
         if crash_after_sendpay:
             os._exit(88)  # Submission acknowledged; no waitsendpay or preimage.
         if wait_pending:
@@ -154,6 +160,8 @@ def run_locked(path, crash_after_xbt=False, crash_after_btc=False, crash_after_s
         if len(payments) != 1:
             raise RuntimeError('outgoing outcome unresolved; refusing resend or BTC release')
         payment = payments[0]
+        if outgoing_xbt.enabled(state):
+            outgoing_xbt.check_payment(state, payment)
         if payment['amount_msat'] != state['xbt_amount_msat']:
             raise RuntimeError('outgoing amount mismatch')
         if payment['status'] == 'pending' and not payment.get('payment_preimage'):
