@@ -61,7 +61,10 @@ def workflow(cli, directory, credentials, url, xbt_sats, max_btc_sats,
         raise ValueError('private receiving directory required')
     with locked(directory):
         info = rpc(cli, 'getinfo')
-        if (info['network'] != 'xbt' or info['id'] != credentials['payer_id']
+        receive_only = credentials.get('scope') == 'receive'
+        if receive_only and set(credentials) != {'token', 'scope'}:
+            raise ValueError('invalid receive credential')
+        if (info['network'] != 'xbt' or (not receive_only and info['id'] != credentials['payer_id'])
                 or any(k.startswith('warning_') for k in info)):
             raise ValueError('customer wallet mismatch or warning')
         expected = dict(cli=cli, customer_id=info['id'], endpoint=url, xbt_sats=xbt_sats,

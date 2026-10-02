@@ -20,15 +20,23 @@ import swap_service as service
 import swap_regtest
 
 
-def demo(lab, payer, btc, xbt, receiver, initial, fail=False):
+def demo(lab, payer, btc, xbt, receiver, initial, fail=False, selected_settings=None):
     rpc = lambda node, *args: lab.rpc(node['cli'], *args)
-    channel = lambda node: rpc(node, 'listpeerchannels')['channels'][0]
+    def channel(node):
+        channels = rpc(node, 'listpeerchannels')['channels']
+        if node['id'] == xbt['id']:
+            channels = [c for c in channels if c['peer_id'] == receiver['id']]
+        assert len(channels) == 1
+        return channels[0]
     config = dict(profile='live-market-v1', btc_cli=btc['cli'], xbt_cli=xbt['cli'], market=dict(
         btc_channel=channel(btc)['short_channel_id'], xbt_channel=channel(xbt)['short_channel_id'],
         xbt_peer=receiver['id'], max_btc_sats=3000, max_xbt_sats=400000, margin_bps=0))
     settings = dict(receive_config=config, btc_cli=btc['cli'], xbt_cli=xbt['cli'],
                     node_ids=[btc['id'], xbt['id']], receiver_id=receiver['id'], swap_root=str(lab.root))
     credential = dict(token='ab'*32, payer_id=receiver['id'])
+    if selected_settings is not None:
+        settings = selected_settings
+        credential = dict(token='ab'*32, scope='receive')
     ordinary = dict(btc_cli=btc['cli'], xbt_cli=xbt['cli'])
     original_create, original_publish, original_identities = service.create, service.publish, service.identities
 
@@ -70,12 +78,25 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False):
     hold.chmod(0o700); rpc(receiver, 'plugin', 'start', str(hold))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
-    with patch('swap_service.create', create), patch('swap_service.publish', publish), patch('swap_service.identities', identities):
+    import receive_selection
+    original_select = receive_selection.select
+    def selector(config, invoice, cap, ids):
+        def operator_rpc(cli, method, *args):
+            assert cli in (btc['cli'], xbt['cli']), 'selection accessed customer RPC'
+            value = lab.rpc(cli, method, *args)
+            if method == 'getinfo':
+                value['network'] = {'regtest':'bitcoin', 'xbt-regtest':'xbt'}[value['network']]
+            if method == 'decode':
+                assert value['currency'] == 'xbtrt'
+                value['currency'] = 'xbt'
+            return value
+        return original_select(config, invoice, cap, ids, rpc=operator_rpc)
+    with patch('swap_service.create', create), patch('swap_service.publish', publish), patch('swap_service.identities', identities), patch('receive_selection.select', selector):
         api = Quotes(settings, auto_process=True)
         server = Server(port, api, credential)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
-            directory = lab.root/'customer-receiving'
+            directory = lab.root/('customer-receiving-'+receiver['data'].name if selected_settings else 'customer-receiving')
             args = (receiver['cli'],directory,credential,f'http://127.0.0.1:{port}',200000,1500)
             offer = workflow(*args,rpc=wallet_rpc)
             assert workflow(*args,rpc=wallet_rpc) == offer
@@ -98,8 +119,9 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False):
             assert process(swap,settings)['outcome']=='pending'
             assert process(swap,settings)['outcome']=='pending'
             assert (swap/'state.json').read_bytes()==before
-            attempts=rpc(xbt,'listsendpays')['payments']; assert len(attempts)==1
-            payment_hash=attempts[0]['payment_hash']
+            payment_hash=rpc(xbt,'decode',state['xbt_invoice'])['payment_hash']
+            attempts=[p for p in rpc(xbt,'listsendpays')['payments'] if p['payment_hash']==payment_hash]
+            assert len(attempts)==1
             wait_until(lambda: bool(rpc(receiver,'xbt-held')['held']),receiver['proc'])
             print('PASS: worker submits one XBT attempt; fresh worker steps preserve pending payments without resend',flush=True)
             rpc(receiver,'xbt-fail' if fail else 'xbt-continue',payment_hash)
@@ -115,7 +137,7 @@ def demo(lab, payer, btc, xbt, receiver, initial, fail=False):
                     c=channel(node)
                     return not c.get('htlcs') and c['to_us_msat']==initial[node['id']]+(0 if fail else delta)
                 wait_until(settled,node['proc'])
-            attempts=rpc(xbt,'listsendpays')['payments']
+            attempts=[p for p in rpc(xbt,'listsendpays')['payments'] if p['payment_hash']==payment_hash]
             assert len(attempts)==1 and attempts[0]['status']==('failed' if fail else 'complete')
             print('PASS: invoice outcome and all four balances verified; no pending HTLCs; repeated recovery does not resend',flush=True)
         finally:

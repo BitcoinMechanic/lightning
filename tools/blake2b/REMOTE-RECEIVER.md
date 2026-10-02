@@ -282,3 +282,62 @@ Only a definite refusal before quote-directory creation is recorded as
 retryable with `--retry-quote`. Existing uncertain request records are not
 reclassified. The API and recovery services need restarting after installing
 these diagnostics; Lightning nodes do not.
+
+## Invoice-selected receivers (opt-in development mode)
+
+The `invoice-direct-v1` receiving policy chooses the XBT destination from the
+signed invoice. It contains the operator CLI bindings, BTC incoming channel,
+BTC/XBT caps and margin, but no receiver identity or XBT channel. The API
+selects one normal, connected direct channel to the invoice payee with sufficient
+outbound liquidity. Ambiguous channels, pending HTLCs, self-payment invoices,
+wrong networks and invalid signatures are refused.
+
+The selection is persisted before quote creation: original invoice digest,
+payment hash, destination, short channel ID, channel ID and funding output.
+Quote retries reuse that selection. A second request for the same payment hash
+cannot create another selected quote, even if its invoice text differs. Before
+a new outgoing attempt, the worker checks the original funding output and the
+current receiving policy. Started attempts retain the existing recovery path;
+they are never rerouted or repriced during recovery.
+
+This mode uses `settings.receive_policy` instead of `settings.receive_config`.
+The two cannot coexist. Its schema is:
+
+```json
+{
+  "profile": "invoice-direct-v1",
+  "btc_cli": ["<existing BTC operator CLI arguments>"],
+  "xbt_cli": ["<existing XBT operator CLI arguments>"],
+  "market": {
+    "btc_channel": "<existing BTC channel>",
+    "max_btc_sats": 1480,
+    "max_xbt_sats": 327827,
+    "margin_bps": 100
+  }
+}
+```
+
+A receive-only listener credential has `token` and `scope: "receive"`, with no
+customer identity. It authorizes `/v1/receive` only; `/v1/quote` is rejected.
+Customer receiving still records its own wallet identity for local recovery.
+This removes receiver enrollment from this receiving path, not authentication
+or the direct-channel requirement. It does not add routed XBT payments, public
+network exposure, admission limits or a permissionless deployment. Legacy
+credentials and the existing fixed-receiver live configuration keep their
+original behavior. This patch supplies no live migration or activation command.
+
+The funded development tests use two independently created XBT wallets and a
+single unchanged policy and receive-only API credential. Each gets a distinct
+invoice, selected channel and funding pin. They check original-offer replay,
+pending recovery, exactly one outgoing attempt and all channel balances. One
+variant rejects the second receiver's HTLC and verifies refunds. Market prices
+and network labels use the existing regtest fixture adapter; actual Lightning
+invoices, HTLCs, payments and channel balances come from the regtest nodes.
+
+```bash
+.venv/bin/python tools/blake2b/test_receive_selection.py -v
+.venv/bin/python tools/blake2b/receive_multi_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli
+.venv/bin/python tools/blake2b/receive_multi_regtest.py \
+  --bitcoind ../bitcoind --bitcoin-cli ../bitcoin-cli --fail-second
+```

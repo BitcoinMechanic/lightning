@@ -15,6 +15,7 @@ from service_manager import private_load
 from swap_controller import save, run
 from swap_rpc import RPC
 import swap_service as service
+import receive_selection as selection
 
 FORMAT = 'btc-xbt-receive-offer-v1'
 FIELDS = {'format', 'xbt_invoice_sha256', 'btc_invoice', 'btc_sats', 'xbt_sats', 'expires_at'}
@@ -35,6 +36,10 @@ def lock(path):
 
 
 def configuration(settings):
+    if 'receive_policy' in settings:
+        if 'receive_config' in settings:
+            raise ValueError('choose one receiving policy')
+        return selection.configuration(settings)
     config = copy.deepcopy(settings['receive_config'])
     if (set(config) != {'profile', 'btc_cli', 'xbt_cli', 'market'}
             or config['profile'] != 'live-market-v1'
@@ -120,6 +125,20 @@ class ReceiveQuotes:
             config = copy.deepcopy(self.config)
             config['market']['max_btc_sats'] = min(config['market']['max_btc_sats'], request['max_btc_sats'])
             try:
+                if selection.is_selected(self.config):
+                    if 'selection' not in stored:
+                        stored['selection'] = selection.select(self.config, request['xbt_invoice'],
+                            request['max_btc_sats'], self.settings['node_ids'])
+                        save(path, stored)
+                    config = selection.validate(stored['selection'], self.config,
+                                                request['xbt_invoice'], request['max_btc_sats'])
+                    payment_index = self.records/('hash-'+stored['selection']['payment_hash']+'.json')
+                    if payment_index.exists():
+                        if private_load(payment_index) != {'request_id': key}:
+                            raise ValueError('payment hash already bound to another request')
+                    else:
+                        save(payment_index, {'request_id': key})
+                    selection.check_channel(stored['selection'])
                 if service.identities(config) != self.settings['node_ids']:
                     raise ValueError('operator identity changed')
                 service.create(config, request['xbt_invoice'], None, directory)
@@ -145,6 +164,18 @@ class ReceiveQuotes:
             quote = private_load(directory/'quote.json')
             expected = copy.deepcopy(self.config)
             expected['market']['max_btc_sats'] = min(expected['market']['max_btc_sats'], request['max_btc_sats'])
+            if selection.is_selected(self.config):
+                expected = selection.validate(stored['selection'], self.config,
+                                              request['xbt_invoice'], request['max_btc_sats'])
+                if quote['terms']['payment_hash'] != stored['selection']['payment_hash']:
+                    raise ValueError('quote payment hash changed')
+                if 'receive_selection' not in quote:
+                    if 'btc_invoice' in quote:
+                        raise ValueError('published quote lacks selection')
+                    quote['receive_selection'] = stored['selection']
+                    save(directory/'quote.json', quote)
+                if quote['receive_selection'] != stored['selection']:
+                    raise ValueError('quote selection changed')
             if (quote['config'] != expected or quote['node_ids'] != self.settings['node_ids']
                     or quote['terms']['xbt_invoice'] != request['xbt_invoice']):
                 raise ValueError('saved quote differs from request')
@@ -193,6 +224,13 @@ def process(directory, settings, rpc=RPC.call, controller=run, now=time.time):
         config = configuration(settings)
         expected = copy.deepcopy(config)
         expected['market']['max_btc_sats'] = quote['config']['market']['max_btc_sats']
+        if selection.is_selected(config):
+            selected = quote['receive_selection']
+            expected = selection.validate(selected, config, quote['terms']['xbt_invoice'],
+                                          quote['config']['market']['max_btc_sats'])
+            if selected['payment_hash'] != quote['terms']['payment_hash']:
+                raise ValueError('quote payment hash differs')
+            selection.check_channel(selected, rpc)
         if (quote['config'] != expected or not 0 < expected['market']['max_btc_sats'] <= config['market']['max_btc_sats']
                 or 'btc_invoice' not in quote):
             raise ValueError('quote outside current receive configuration')

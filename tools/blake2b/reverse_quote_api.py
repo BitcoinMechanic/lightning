@@ -41,7 +41,7 @@ class Quotes:
             raise ValueError('auto_process must be boolean')
         self.auto_process = auto_process
         self.receive = None
-        if "receive_config" in settings:
+        if "receive_config" in settings or "receive_policy" in settings:
             from receive_service import ReceiveQuotes
             self.receive = ReceiveQuotes(settings, auto_process=auto_process)
         from reverse_check import check
@@ -149,7 +149,11 @@ class Server(HTTPServer):
     def __init__(self, port, quotes, credentials):
         if not 1 <= port <= 65535:
             raise ValueError('invalid loopback port')
-        if credentials['payer_id'] != quotes.settings['receiver_id']:
+        self.receive_only = credentials.get('scope') == 'receive'
+        if self.receive_only:
+            if set(credentials) != {'token', 'scope'} or 'receive_policy' not in quotes.settings:
+                raise ValueError('receive credential requires invoice-selected policy')
+        elif credentials['payer_id'] != quotes.settings['receiver_id']:
             raise ValueError('API token is bound to another customer')
         if not re.fullmatch('[0-9a-f]{64}', credentials['token']):
             raise ValueError('invalid API token')
@@ -186,6 +190,9 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get_all('Authorization', [])
         if len(auth) != 1 or not hmac.compare_digest(auth[0], 'Bearer '+self.server.token):
             self.reply(401, {'error': 'unauthorized'})
+            return
+        if self.server.receive_only and self.path != '/v1/receive':
+            self.reply(403, {'error': 'request_rejected'})
             return
         port = self.server.server_port
         if (self.path not in ('/v1/quote', '/v1/receive') or self.headers.get_all('Origin')

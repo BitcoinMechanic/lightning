@@ -1,6 +1,8 @@
 """Runner exit handling and parallel port reservations; no live nodes."""
 from concurrent.futures import ThreadPoolExecutor
 import os
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 import sys
 import tempfile
@@ -31,10 +33,62 @@ class RunnerTests(unittest.TestCase):
             connect.assert_called_with(('127.0.0.1', 19735), timeout=1)
             connection.__exit__.assert_called_once()
 
+    def test_multi_receiver_accepts_runner_directory_and_preserves_failure_logs(self):
+        import receive_multi_regtest as multi
+        for fail in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)/'case'
+                lab = MagicMock()
+                def execute(instance, reject):
+                    self.assertIs(instance, lab)
+                    self.assertTrue(reject)
+                    (root/'retained.log').write_text('test diagnostic')
+                    if fail:
+                        raise RuntimeError('fixture failure')
+                with patch.object(multi, 'Lab', return_value=lab), \
+                        patch.object(multi, 'run', side_effect=execute), redirect_stdout(io.StringIO()):
+                    args = ['--bitcoind', '/bitcoind', '--bitcoin-cli', '/bitcoin-cli',
+                            '--work-dir', str(root), '--fail-second']
+                    if fail:
+                        with self.assertRaises(RuntimeError): multi.main(args)
+                    else:
+                        multi.main(args)
+                lab.close.assert_called_once()
+                self.assertEqual((root/'retained.log').read_text(), 'test diagnostic')
+                with patch.object(multi, 'Lab') as create, self.assertRaises(FileExistsError):
+                    multi.main(args)
+                create.assert_not_called()
+
+    def test_multi_receiver_standalone_directory_is_temporary(self):
+        import receive_multi_regtest as multi
+        roots = []
+        def create(root, *args):
+            roots.append(root)
+            return MagicMock()
+        with patch.object(multi, 'Lab', side_effect=create), patch.object(multi, 'run'), \
+                redirect_stdout(io.StringIO()):
+            multi.main(['--bitcoind', '/bitcoind', '--bitcoin-cli', '/bitcoin-cli'])
+        self.assertEqual(len(roots), 1)
+        self.assertFalse(roots[0].exists())
+
+    def test_parallel_limit_accepts_32_and_refuses_outside_bounds(self):
+        import regression
+        with tempfile.TemporaryDirectory(prefix='cxj-') as temporary:
+            case = Case('quick', (sys.executable, '-c', 'pass'))
+            args = ['regression.py', '--jobs', '32', '--output', str(Path(temporary)/'out')]
+            with patch.object(regression, 'cases', return_value=[case]), \
+                    patch.object(sys, 'argv', args), redirect_stdout(io.StringIO()):
+                self.assertEqual(regression.main(), 0)
+        for jobs in ('0', '33'):
+            with patch.object(sys, 'argv', ['regression.py', '--jobs', jobs]), \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                regression.main()
+            self.assertEqual(error.exception.code, 2)
+
     def test_catalog_unique(self):
         catalog = cases()
         self.assertEqual(len(catalog), len({case.name for case in catalog}))
-        self.assertEqual(sum(c.live for c in catalog), 53)
+        self.assertEqual(sum(c.live for c in catalog), 55)
 
     def test_exit_codes_and_missing_executable(self):
         with tempfile.TemporaryDirectory() as directory:
