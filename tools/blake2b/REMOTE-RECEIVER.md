@@ -194,3 +194,64 @@ The controller still saves submission intent before sending and never resends
 an uncertain outgoing attempt. Manual forward swaps keep their previous
 recovery-only behavior. Changing the bound customer requires a matching new
 receiving configuration; the existing configuration is not silently retargeted.
+
+## Unified customer command
+
+`customer.py` wraps the existing send and receive workflows using only the
+customer wallet. Defaults: wallet `~/cln-xbt-customer`, credential
+`~/.config/cln-swaps/customer-api.json`, SSH-forwarded API
+`http://127.0.0.1:19840`. New attempts are stored privately beneath
+`~/cln-customer-swaps/managed`, separate from existing records.
+
+Send BTC using XBT (still requires quote review and typing `PAY`):
+
+```bash
+.venv/bin/python tools/blake2b/customer.py send \
+  --invoice-file "$HOME/cln-customer-swaps/fresh-btc-invoice.txt" \
+  --max-xbt-sats 400000
+```
+
+The exact invoice selects a stable attempt ID. Repeating the command reuses
+that attempt. Wallet, endpoint, invoice and limits are pinned before the
+workflow begins; changes are refused. Submitted payments use the existing
+reconciliation rules and are never automatically resubmitted. Preserve the
+root and records, including after an unknown outcome.
+
+Receive XBT from a BTC payer:
+
+```bash
+.venv/bin/python tools/blake2b/customer.py receive coffee \
+  --xbt-sats 325000 --max-btc-sats 1480
+```
+
+This names the attempt `receive-coffee`. Repeat the same name and limits to
+reuse the original invoice and offer. The output includes the BTC invoice for
+the payer; keep it private. A different name deliberately creates a new
+receipt. The example amounts remain subject to prices, liquidity and operator
+caps. Expired offers are not automatically replaced.
+
+List new attempts, or resume one using its saved arguments:
+
+```bash
+.venv/bin/python tools/blake2b/customer.py status
+.venv/bin/python tools/blake2b/customer.py resume receive-coffee
+```
+
+Status reads files and queries the customer wallet only. It never creates an
+invoice, requests a quote, prompts or pays; invoices, node IDs, hashes and
+preimages are omitted. Resume may obtain a missing quote or show the original
+review prompt for an unsubmitted send. After submission it reconciles through
+the existing workflow. Use `--retry-quote` only after fixing a recorded
+definite pre-creation refusal.
+
+Inspect an older record without importing or changing it:
+
+```bash
+.venv/bin/python tools/blake2b/customer.py status \
+  --directory "$HOME/cln-customer-swaps/api-receive-1"
+```
+
+Resume older attempts with their original scripts and arguments. No records
+are migrated. Override `--lightning-dir`, `--token-file` or `--url` on send or
+receive if needed; resume uses saved values. The global `--root` option must
+precede the subcommand.
