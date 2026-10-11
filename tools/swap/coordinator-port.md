@@ -1,4 +1,76 @@
-# Coordinator port boundaries (0072)
+# Coordinator port boundaries (0074)
+
+## Local authority integration (0074)
+
+Base: annotated `privkeyio-routes-20261011`, engine tree
+`4b573074e95a7a6787dad2ebc166dece405928b4`. The operator reported the six
+0072 funded route scenarios passed, pushed the 0073 checkpoint and synced the
+VM. The new patch changes only Python source, tests and this documentation;
+the compiled, crash-fixed BTC/XBT engines are reused.
+
+`bounded_authority.py` introduces `swap-bounded-authority-v1`. It accepts only
+explicit BTC/new-XBT regtest bindings. Fresh fixture initialization is separate
+from opening existing state. Missing, legacy or cross-profile journals fail;
+there is no format upgrade that confers new-fork authority on an old grant.
+
+One private locked journal contains immutable grants, their current selection,
+pause flags, and complete enrollments. Each locally confirmed grant pins its
+kind, protocol, environment, node, funding/signing-type channels, expiry, slot
+limit and amount budgets. Outgoing per-payment and aggregate amounts include
+routing fees; incoming budgets count the full received amount. Failed, retired
+and expired enrollments still consume their original reservation. Replacing a
+grant requires every previous enrollment to reconcile as terminal.
+
+Enrollment and reservation are one atomic durable replacement, so there is no
+separate missing-record crash window. Exact enrollment recovery remains valid
+after pause or expiry. A payment hash cannot be enrolled twice in either local
+kind. The plan's complete signed invoice, route, fee/delay/hop limits and channel
+pin are immutable. Admission decodes the invoice again, verifies features and
+amount/secret/destination/expiry, checks current funding/signing type and
+liquidity, and refuses pre-existing payment/HTLC history. It never replans.
+
+`send()` saves its intent before the only `sendpay` call site. All subsequent
+calls observe group 1, part 0, exact amounts/invoice/destination and original
+created index/time. Zero rows after an intent stay unknown; the process cannot
+retire that enrollment or send again. Terminal outcome regressions, replacement
+HTLCs, changed funding, contradictory preimages and missing original history
+block advancement. A failed journal write freezes the current instance even
+when the atomic replacement may already have succeeded.
+
+Incoming registration similarly saves its exact quote first. Registration and
+gate resolution can repeat only the same idempotent gate operation. Incoming
+binding is learned from the actual held HTLC, checked against approved pins and
+core history, then saved once with HTLC ID, absolute expiry and history index.
+The grant remains recoverable after pause/expiry. Gate `release_intent` and
+`fail_intent` are never enough to declare completion: matching terminal
+`listhtlcs` state and a quiet normal channel are also required. Unpaid expired
+quotes and unsent expired plans can become terminal only with empty original
+history; a send intent can never use that path.
+
+A `restored.json` marker blocks all operational calls, including reconciliation
+writes, while allowing redacted cached status. This is a restore barrier, not a
+backup integration or restoration protocol. Closing, missing and archived
+channels remain blocked for dedicated on-chain recovery; this patch does not
+reuse the old normal-channel/closed-channel shortcuts or authorize a close.
+
+The VM fixture uses the proven four-node public-prefix/private-tail topology
+on each chain. Two separate local authorities own the source and recipient.
+Each operation opens a fresh journal/authority instance. The matrix covers
+release, failure and all-daemon held restart, lost registration/send/resolution
+replies, exact duplicate enrollment, amount-budget exhaustion despite a spare
+slot, and paused/expired recovery. It checks the same six endpoint balances,
+original incoming and outgoing HTLCs, payment identity and immutable plan.
+
+This module is local authority under a trusted caller, not evidence that an
+incoming payment on another chain exists. The fixture chooses resolution and
+uses synthetic core-invoice traps. There are no runes, HTTPS service, production
+activation, installer, customer invoice publisher, price policy, cross-chain
+timing/reserve checks, on-chain recovery, or automatic payment retries here.
+The next integration must bind this authority to fresh scoped remote credentials
+and both sides of the cross-chain contract, then port the controller's approval,
+timing, reserve, pricing and recovery checks before StartOS activation/UI work.
+
+## Route adapter audit (0072)
 
 Base: annotated `privkeyio-plugin-crash-20261011`, engine tree
 `c58fcd05f59cbd7a4092c4936185df72dcf0f244`. The operator reported the
@@ -85,6 +157,5 @@ not reclassified as routed coordinator evidence. 0072 is not a cross-chain
 swap, bounded grant port, controller worker, HTTPS interface, on-chain recovery
 test, backup restore solution, legacy-channel migration or installable UI.
 
-Next integration: versioned local grant/enrollment records and immutable send
-intents using these identities/plans, new gate binding reconciliation, then
-funded bidirectional controller matrices before StartOS activation/UI work.
+The local grant/enrollment and send-intent work is now implemented by 0074
+above. Funded bidirectional controller matrices remain a later integration gate.

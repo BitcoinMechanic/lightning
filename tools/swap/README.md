@@ -1,11 +1,14 @@
 # Swap protocol boundary (0066)
 
-Latest addition: **0072** ports protocol-bound, read-only route planning and
-exact outgoing-attempt observation. See [coordinator-port.md](coordinator-port.md)
-for the source/API audit, fixture scope and remaining authority integration.
-Run `python3 tools/swap/test_route_plan.py -v` and
-`python3 tools/swap/test_route_fixture.py -v` locally. The funded routed matrix
-requires the isolated VM runner; local tests are not runtime evidence.
+Latest addition: **0074** adds versioned local bounded authority, atomic
+enrollment/budget reservation, a durable one-send intent, exact incoming/attempt
+reconciliation and terminal HTLC evidence. See
+[coordinator-port.md](coordinator-port.md) for the source/API audit and scope.
+Run `python3 tools/swap/test_bounded_authority.py -v` and
+`python3 tools/swap/test_authority_fixture.py -v` locally. The funded authority
+matrix requires the isolated VM runner; local tests are not runtime evidence.
+The authority has no remote credential or installed endpoint. Cross-chain
+policy, price confirmation, HTTPS grants and the full worker remain separate.
 
 These modules are the first port from the installed `pre-privkeyio-port-20261010`
 checkpoint to privkeyio's engine at `482c8c521166ddc9e244cd6d44a2d8a55bd0d529`.
