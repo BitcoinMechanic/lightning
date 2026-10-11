@@ -1,5 +1,12 @@
 # Swap protocol boundary (0066)
 
+Latest addition: **0072** ports protocol-bound, read-only route planning and
+exact outgoing-attempt observation. See [coordinator-port.md](coordinator-port.md)
+for the source/API audit, fixture scope and remaining authority integration.
+Run `python3 tools/swap/test_route_plan.py -v` and
+`python3 tools/swap/test_route_fixture.py -v` locally. The funded routed matrix
+requires the isolated VM runner; local tests are not runtime evidence.
+
 These modules are the first port from the installed `pre-privkeyio-port-20261010`
 checkpoint to privkeyio's engine at `482c8c521166ddc9e244cd6d44a2d8a55bd0d529`.
 Those initial modules use only the Python standard library. The separate 0070
