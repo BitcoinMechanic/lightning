@@ -103,3 +103,96 @@ incoming bindings, route execution and exact-attempt recovery, both funded swap
 matrices, full StartOS XBT identity/backend/UI/backup integration, then an explicit
 upgrade path. The upstream wrapper still has package ID `c-lightning`; it must
 not be installed as an XBT replacement in this state.
+
+## Protocol-bound incoming gate (0068)
+
+The operator reported the complete 0066e engine fixture passed on the packaging
+VM, then exported, pushed and synced checkpoint `privkeyio-engine-20261010`.
+0068 adds an isolated incoming gate on that source checkpoint. It does not wire
+the new gate into package activation, grants, controller execution or the UI.
+
+`held_gate.py` uses a new schema-2 journal with format `swap-held-gate-v1`.
+Every journal and quote carries the explicit BTC/new-XBT protocol binding.
+The arriving hook is matched to the actual confirmed local channel and its
+committed, untrimmed HTLC using read-only `getinfo` and `listpeerchannels`.
+The persisted binding includes the channel ID, SCID, peer, funding transaction
+and output, numeric signing type, and HTLC ID. Stable amount, hash, secret and
+absolute expiry fields are saved before the gate reports `held`.
+
+Admission accepts exactly one full payment part on a channel in the quote's
+approved set. There is no customer SCID entry or outgoing payment RPC in this
+gate. The future grant adapter must supply the approved set; this fixture uses
+the actual channel directly. The initial implementation requires confirmed
+SCIDs and does not admit zero-conf/alias-only channels or splice transitions.
+
+Recovery requires the same snapshot and funding binding. It does not renew
+admission expiry or impose a fresh connected/reestablished requirement while
+the engine is replaying held HTLCs before peer connections. New admission does
+require a synced node and a reestablished channel. Mismatched accepted replays
+remain unresolved and cannot be released by this process. Node/RPC uncertainty
+during an accepted replay similarly requires inspection and a clean restart.
+
+Release/failure intent is saved before either the hook reply or operator reply.
+The exact terminal request is idempotent; the opposite terminal request refuses.
+`release_intent` is deliberately not called `settled`. Status omits the payment
+secret, preimage and raw hook. Journal writes use a private directory, no-follow
+file opens, a lifetime writer lock, exclusive temporary files, file fsync,
+atomic replacement and directory fsync. An uncertain write permanently blocks
+that process and leaves hooks unresolved. Missing, legacy, malformed or changed
+identity records refuse startup; the plugin never creates replacement journals.
+
+`gate_plugin.py` is static and requires startup on regtest with an explicit
+protocol option and a pre-created fixture journal. `fixture_gate_plugin.py`
+adds a test-only pause after terminal persistence, before any response. Neither
+plugin is included in a StartOS service image or accepts mainnet activation.
+`initialize_fixture()` is only for fresh synthetic regtest state; it is not an
+activation, backup, restore or journal-migration API.
+
+The new `test_gate_engine.py` reuses the tested 0066e Lab, without modifying it.
+On each chain it funds a fresh channel, checks ordinary payments through the
+gate, and runs release/failure after restarting both endpoints while held. It
+also interrupts each terminal reply after its durable write and restarts both
+nodes to replay the original decision. Every scenario checks the same funding,
+HTLC and outgoing part/group/created-index, plus the exact settled balances on
+both endpoints. It then checks startup refusal of legacy, wrong-profile and
+missing journals. This is direct-channel gate recovery, not a routed swap or
+full controller recovery test. It keeps deprecated APIs disabled and never
+retries a sendpay after an uncertain response.
+
+### Required engine fix before live swap authority
+
+Inspection of this pinned core found an important lifecycle hazard:
+`lightningd/plugin.c:destroy_plugin` synthesizes PLUGIN_TERMINATED for pending
+requests before processing the plugin's importance. In
+`lightningd/plugin_hook.c:plugin_hook_callback`, that error advances to the next
+hook/final callback. An important-plugin shutdown alone therefore does not
+guarantee a held payment stays unresolved when the plugin dies independently.
+Normal whole-node shutdown is different: it enters LD_STATE_SHUTDOWN and clears
+pending requests before plugin destruction. These paths are not interchangeable.
+
+0068's runtime tests cover whole-node graceful restart and lost terminal replies.
+They DO NOT establish plugin-only crash safety, power-loss/fs rollback safety,
+on-chain timeout recovery, restored-backup safety, routing/grant/controller
+integration or migration of funded legacy channels. A core change must prevent
+held-hook fallthrough on important-plugin death and pass process-crash tests on
+both engines before this gate can authorize outgoing swap funds. Production
+activation is intentionally unavailable here. The fixture receipt records
+`plugin_only_crash_safe: false` and `production_activation_supported: false`.
+
+Run local tests with `python3 tools/swap/test_held_gate.py -v` and
+`python3 tools/swap/test_gate_fixture.py -v`. The full engine fixture requires
+the packaging VM; local pure/subprocess checks are not funded runtime evidence.
+
+0068a fixes the terminal-reply fault injector's process lifetime. Its original
+sleep loop ignored stdin EOF. Ordinary CLN shutdown closes a plugin's pipes but
+does not guarantee that the process is killed. The paused child could therefore
+outlive lightningd with its journal lock held, causing replacement startup to
+refuse. This was reproduced locally using a real child process, pipe and flock.
+The corrected pause drains input without dispatching or replying, exits on EOF
+via SystemExit, and lets the plugin's finally block close its journal lock.
+The fixture also waits for that original lock to become available before
+starting a replacement; it never deletes the lock file or forces a lock bypass.
+New real-process tests verify no terminal reply escapes, the recorded intent
+is retained, and a fresh writer can acquire the same lock after pipe closure.
+The gate's journal format, binding rules and release/failure semantics are
+unchanged. The separate important-plugin death blocker is still unresolved.
