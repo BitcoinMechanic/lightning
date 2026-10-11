@@ -1,5 +1,11 @@
 # Core Lightning with BLAKE2b proof of work
 
+Development branch `privkeyio-swaps`: `tools/swap/` contains the 0066 explicit
+chain-identity and unsigned swap-invoice port, plus a disposable engine fixture.
+See [its README](tools/swap/README.md) for scope and test commands. This branch
+does not yet port the funded swap controller or migrate existing XBT channels.
+The underlying engine remains pinned to `v26.06.9-blake2b.7`.
+
 This is an unofficial version of [Core Lightning](https://github.com/ElementsProject/lightning) for Bitcoin after its proof of work changed to BLAKE2b. It is not affiliated with the Core Lightning project, which has not adopted the change.
 
 > **Not audited. Use at your own risk, and no warranty of any kind, see the [BSD-MIT license](LICENSE).** It holds keys and funds, it changes how transactions are signed, and the feature numbers it uses on the wire are provisional. Read *Before opening channels* below. Everything under the divider is Core Lightning's documentation and describes Core Lightning rather than this version.
