@@ -1,4 +1,61 @@
-# Coordinator port boundaries (0074)
+# Coordinator port boundaries (0076)
+
+## Remote authority boundary (0076)
+
+Base: annotated `privkeyio-authority-20261011`, engine tree
+`33d099923dfbf993b2c0806f3634fa76385a611c`. The operator reported all six
+0074 local authority scenarios passed and completed the 0075 tower checkpoint
+and VM sync. Compiled engines and the local authority format stay unchanged.
+This adds a static disposable-regtest RPC facade, with no StartOS activation.
+
+`remote_authority.py` uses a separate private locked journal with format
+`swap-remote-authority-v1`. Every operation opens fresh state, acquiring the
+authority lock before the credential lock. Missing, restored, legacy and
+cross-profile state refuses. Plugin paths use CLN's network directory from
+init, including its `regtest` component.
+
+Local `swap-authority-credential(grant_id, confirmed)` exposes a rune for an
+existing approved grant. Durable mint intent precedes the sole `createrune`
+call. A lost reply is recovered through `showrunes` by the exact restriction
+set; a known rune and unique ID must remain unchanged. Missing or duplicate
+matches, changed credentials and revocation refuse without reminting. An
+uncertain journal write blocks that instance. Old grants are never promoted.
+
+The rune allows only `swap-authority-call`, one exact grant ID, exactly three
+named parameters, and the operations for that grant's incoming/outgoing kind.
+The facade checks the exact fields and ownership of every enrollment. It has
+no raw RPC, grant creation/renewal/pause, route search, close or credential-mint
+operation. Admission expiry and pause are enforced by the existing authority;
+there is no rune time caveat that would cut off enrolled recovery. Core rune
+blacklisting still revokes access.
+
+Enrollment requires a confirmation digest of the exact payload. This binds
+the caller's request, not proof of a human decision, incoming funds on another
+chain, a price or a timing policy. The bearer is a trusted controller with the
+finite local grant. Authenticated `evidence` returns only a selected enrollment
+and may contain its preimage: this is private execution data, not user status.
+`info` omits credentials and never rewrites the authority/credential journals.
+
+`authority_plugin.py` has no HTLC hook and only a fixed local RPC allowlist.
+CLN's authenticated transport must check the rune before dispatch. Local Unix
+RPC remains administrative. The fixture uses the real pinned C `commando`
+transport; it invokes credential APIs and authenticated request/refusal controls
+before funding. It covers both engines' routed release/failure/held restart,
+raw-method/wrong-grant/positional/extra-field/forged-rune refusals, lost mint and
+payment-operation replies, paused/expired recovery, budgets, original HTLC and
+attempt, exact six balances, restore barriers and core revocation. Fault clocks
+and reply loss exist only in the separate fixture plugin. Diagnostic archives
+omit raw daemon/RPC logs and credential journals.
+
+Schemas and transport code were audited in both pinned source trees. Local
+tests are not funded runtime evidence: the VM must emit the complete 0076
+receipt. No HTTPS/CLNrest, complete cross-chain controller, on-chain recovery,
+backup restoration or production activation is established by this patch.
+
+Next: versioned cross-chain contracts, signed customer invoice publication,
+controller confirmation, reserve/timing checks, market pricing and recovery;
+then both complete funded controller directions before full StartOS XBT
+UI/backend/backup activation. This facade remains regtest-only.
 
 ## Local authority integration (0074)
 

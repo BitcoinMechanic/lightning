@@ -1,6 +1,15 @@
 # Swap protocol boundary (0066)
 
-Latest addition: **0074** adds versioned local bounded authority, atomic
+Latest addition: **0076** adds fresh grant-scoped rune credentials and a static
+regtest remote facade. Lost mint replies recover the exact stored credential;
+uncertain absence never permits another mint. The funded fixture uses real CLN
+commando authentication on both engines, including raw-method refusals and
+original-attempt recovery. It does not enable StartOS HTTPS or the cross-chain
+controller. See `coordinator-port.md` for the precise boundary. Run local tests
+with `python3 tools/swap/test_remote_authority.py -v` and
+`python3 tools/swap/test_remote_fixture.py -v`; funded execution requires the VM.
+
+**0074** adds versioned local bounded authority, atomic
 enrollment/budget reservation, a durable one-send intent, exact incoming/attempt
 reconciliation and terminal HTLC evidence. See
 [coordinator-port.md](coordinator-port.md) for the source/API audit and scope.
