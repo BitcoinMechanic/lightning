@@ -1,0 +1,36 @@
+diff --git a/lightningd/plugin.c b/lightningd/plugin.c
+index c1b330ce..e410b0ab 100644
+--- a/lightningd/plugin.c
++++ b/lightningd/plugin.c
+@@ -264,2 +264,5 @@ static void destroy_plugin(struct plugin *p)
+-	/* Don't fail requests if we're exiting anyway! */
+-	if (p->plugins->ld->state != LD_STATE_SHUTDOWN) {
++	/* An important plugin's death is not permission to continue a hook.
++	 * PLUGIN_TERMINATED advances hook chains, so discard pending requests
++	 * without callbacks when this death is going to stop lightningd.
++	 * Freeing reqs below still removes their pending_requests entries. */
++	if (p->plugins->ld->state != LD_STATE_SHUTDOWN && !p->important) {
+@@ -278,4 +280,0 @@ static void destroy_plugin(struct plugin *p)
+-	/* If this was last one manifests were waiting for, handle deps */
+-	if (p->plugin_state == AWAITING_GETMANIFEST_RESPONSE)
+-		check_plugins_manifests(p->plugins, p->plugins->ld->log);
+-
+@@ -292,5 +291,2 @@ static void destroy_plugin(struct plugin *p)
+-	/* If this was the last one init was waiting for, handle cmd replies */
+-	if (p->plugin_state == AWAITING_INIT_RESPONSE)
+-		check_plugins_initted(p->plugins);
+-
+-	/* Now check if the dying plugin is important.  */
++	/* Stop before startup completion callbacks can replace io_break(ld)
++	 * or initiate more plugin work. Ordinary shutdown takes precedence. */
+@@ -301,0 +298 @@ static void destroy_plugin(struct plugin *p)
++		return;
+@@ -303,0 +301,8 @@ static void destroy_plugin(struct plugin *p)
++	/* If this was last one manifests were waiting for, handle deps */
++	if (p->plugin_state == AWAITING_GETMANIFEST_RESPONSE)
++		check_plugins_manifests(p->plugins, p->plugins->ld->log);
++
++	/* If this was the last one init was waiting for, handle cmd replies */
++	if (p->plugin_state == AWAITING_INIT_RESPONSE)
++		check_plugins_initted(p->plugins);
++

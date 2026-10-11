@@ -2,8 +2,8 @@
 """Disposable fixture fault injection. Never installed as a service plugin.
 
 Pause after the durable terminal write, before either hook or command reply.
-The harness then shuts down the entire node and restarts it. This is NOT a
-plugin-only crash test; the engine's plugin-death hook behavior is still unsafe.
+0068a restarts the whole node. The separate 0070 harness kills this process and
+checks the engine's behavior; the PID marker is only for that disposable test.
 """
 import json
 import os
@@ -13,6 +13,13 @@ import gate_plugin
 import held_gate
 
 original_write = held_gate.Journal.write
+original_init = held_gate.Journal.__init__
+
+
+def fixture_init(self, directory):
+    original_init(self, directory)
+    (self.directory/'fixture-process.json').write_text(json.dumps(
+        dict(pid=os.getpid(), parent=os.getppid())))
 
 
 def pause_until_parent_closes_input():
@@ -43,6 +50,7 @@ def write_and_pause(self, record):
 
 
 if __name__ == '__main__':
+    held_gate.Journal.__init__ = fixture_init
     held_gate.Journal.write = write_and_pause
     try:
         gate_plugin.main()

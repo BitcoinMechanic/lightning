@@ -2,7 +2,8 @@
 
 These modules are the first port from the installed `pre-privkeyio-port-20261010`
 checkpoint to privkeyio's engine at `482c8c521166ddc9e244cd6d44a2d8a55bd0d529`.
-They use only the Python standard library and change no C code or signing rules.
+Those initial modules use only the Python standard library. The separate 0070
+core lifecycle change is described below; signing rules remain unchanged.
 
 `chain_identity.py` validates explicit protocol profiles. Both Bitcoin and the
 new XBT fork use `bitcoin`/`bc` on mainnet and `regtest`/`bcrt` in the fixture.
@@ -196,3 +197,64 @@ New real-process tests verify no terminal reply escapes, the recorded intent
 is retained, and a fresh writer can acquire the same lock after pipe closure.
 The gate's journal format, binding rules and release/failure semantics are
 unchanged. The separate important-plugin death blocker is still unresolved.
+
+## Important-plugin death (0070)
+
+0068a's eight funded recovery scenarios were reported passed and preserved in
+the annotated `privkeyio-gate-20261011` checkpoint. 0070 changes
+`lightningd/plugin.c`: a dying important plugin's pending requests are freed
+without synthetic failure callbacks, and shutdown is requested before startup
+completion callbacks or stop notifications can initiate more work. Ordinary
+shutdown takes precedence; a non-important plugin retains the existing
+PLUGIN_TERMINATED behavior. Pending-request destructors still remove the map
+entries while the plugin object exists. No HTLC, invoice or signing rule changes.
+
+The pinned BTC v26.06.9 and XBT v26.06.9-blake2b.7 plugin.c files are identical
+before this fix. `important-plugin.patch` carries the same change for the BTC
+source build; the build runner verifies byte-identical resulting files. Fixture
+binaries use explicit `-swap0070` versions and remain outside package installers.
+
+`test_plugin_teardown.py` compiles the actual destructor body with observation
+stubs. It checks request-callback suppression, startup completion ordering,
+ordinary shutdown and non-important-plugin behavior. It is not a memory-lifetime
+or funded daemon test. The unchanged body must fail this regression.
+
+`test_plugin_crash.py` has three disposable regtest modes. Baseline mode uses
+the original binaries to expose important-plugin hook fallthrough. Regression
+mode reruns the eight whole-node restart scenarios on the source-built engines.
+Patched mode kills the actual gate child with SIGKILL during hold and after
+durable release/failure intent. It requires exit code 1 from lightningd, an
+unchanged committed incoming HTLC row before restart, unchanged gate journal,
+and the original pending sender attempt. Recovery must retain funding, signing
+type, HTLC binding and attempt identity, and produce the expected preimage or
+failure plus exact channel balance deltas. Ordinary payments before/after and
+non-important-plugin fallthrough are controls.
+
+The crash fixture deliberately registers gate quotes for ordinary core invoices
+as a fallthrough trap: the receiver already has the preimage and could settle
+them if the gate is skipped. Actual gate invoices remain independent of the
+core invoice database. The fixture sends one full part once, checks real child
+process ownership before signaling, and opens the core database read-only. The
+PID marker and terminal pause exist only in `fixture_gate_plugin.py`.
+
+Local checks are not proof of the complete crash matrix. The VM runner emits
+READY only after the original-binary controls, patched restart matrix and
+patched SIGKILL matrix all produce complete receipts. This covers process death,
+not power loss, backup rollback, on-chain timeouts, public routing or controller
+integration. Production activation and installers remain unavailable.
+
+0070a corrects the crash fixture, retaining the exact 0070 compiled core fix.
+The first baseline run logged hook fallthrough and a complete HTLC set before
+important-plugin shutdown, but the offers plugin's asynchronous invoice_payment
+hook delayed core settlement. The old assertion incorrectly required a durable
+fulfillment with that downstream hook still running. After the trap invoice has
+been created, decoded and held, 0070a stops offers on the disposable receiver
+and verifies the complete remaining plugin set. This is done in both original
+and patched fault scenarios. Fresh daemon starts restore all selected plugins;
+the whole-node restart regression continues using the original plugin set.
+The baseline must still persist the exact trap preimage. Patched crashes still
+require the full incoming row and journal to remain unchanged, and now also
+reject any core hook-continuation or invoice-resolution trace after SIGKILL.
+The non-important control verifies the exact sender preimage. A small diagnostic
+record captures HTLC state and preimage presence before an assertion can fail.
+No payment, gate, core or service configuration is changed by this correction.

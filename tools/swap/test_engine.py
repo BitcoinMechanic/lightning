@@ -125,6 +125,10 @@ def direct_payment(lab, node, peer, channel, created, amount_msat):
 
 
 class Lab:
+    # Subclasses that test source builds must declare their exact versions.
+    engine_versions = {ci.BTC: ('v26.06.9', '26.06.9'),
+                       ci.PRIVKEYIO_XBT: ('v26.06.9-blake2b.7', '26.06.9-blake2b.7')}
+
     def __init__(self, args):
         self.args = args
         self.root = Path(tempfile.mkdtemp(prefix='privkeyio-0066-', dir=args.results_parent))
@@ -251,8 +255,7 @@ class Lab:
                 'fixture_deprecated_APIs_unexpectedly_enabled')
         check_capabilities(help_reply)
         version = info['version']
-        require(version in (('v26.06.9-blake2b.7','26.06.9-blake2b.7') if profile==ci.PRIVKEYIO_XBT
-                            else ('v26.06.9','26.06.9')), 'unexpected_engine_version')
+        require(version in self.engine_versions[profile], 'unexpected_engine_version')
         def listening():
             with socket.create_connection(('127.0.0.1',port),timeout=1):return True
         self.wait(listening,proc)

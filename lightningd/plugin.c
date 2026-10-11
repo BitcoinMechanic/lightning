@@ -261,8 +261,11 @@ static void destroy_plugin(struct plugin *p)
 	reqs = tal_arr(NULL, struct jsonrpc_request *, 0);
 	strmap_iterate(&p->pending_requests, request_add, &reqs);
 
-	/* Don't fail requests if we're exiting anyway! */
-	if (p->plugins->ld->state != LD_STATE_SHUTDOWN) {
+	/* An important plugin's death is not permission to continue a hook.
+	 * PLUGIN_TERMINATED advances hook chains, so discard pending requests
+	 * without callbacks when this death is going to stop lightningd.
+	 * Freeing reqs below still removes their pending_requests entries. */
+	if (p->plugins->ld->state != LD_STATE_SHUTDOWN && !p->important) {
 		for (size_t i = 0; i < tal_count(reqs); i++)
 			plugin_terminated_fail_req(p, reqs[i]);
 	}
@@ -275,10 +278,6 @@ static void destroy_plugin(struct plugin *p)
 					       &p->subscriptions[i]);
 	}
 
-	/* If this was last one manifests were waiting for, handle deps */
-	if (p->plugin_state == AWAITING_GETMANIFEST_RESPONSE)
-		check_plugins_manifests(p->plugins, p->plugins->ld->log);
-
 	/* Daemon shutdown overrules plugin's importance; aborts init checks */
 	if (p->plugins->ld->state == LD_STATE_SHUTDOWN) {
 		/* But return if this was the last plugin! */
@@ -289,17 +288,23 @@ static void destroy_plugin(struct plugin *p)
 		return;
 	}
 
-	/* If this was the last one init was waiting for, handle cmd replies */
-	if (p->plugin_state == AWAITING_INIT_RESPONSE)
-		check_plugins_initted(p->plugins);
-
-	/* Now check if the dying plugin is important.  */
+	/* Stop before startup completion callbacks can replace io_break(ld)
+	 * or initiate more plugin work. Ordinary shutdown takes precedence. */
 	if (p->important) {
 		log_broken(p->log,
 			   "Plugin marked as important, "
 			   "shutting down lightningd!");
 		lightningd_exit(p->plugins->ld, 1);
+		return;
 	}
+
+	/* If this was last one manifests were waiting for, handle deps */
+	if (p->plugin_state == AWAITING_GETMANIFEST_RESPONSE)
+		check_plugins_manifests(p->plugins, p->plugins->ld->log);
+
+	/* If this was the last one init was waiting for, handle cmd replies */
+	if (p->plugin_state == AWAITING_INIT_RESPONSE)
+		check_plugins_initted(p->plugins);
 
 	if (tal_count(p->custom_msgs))
 		tell_connectd_custommsgs(p->plugins);

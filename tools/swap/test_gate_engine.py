@@ -20,6 +20,8 @@ PLUGIN = Path(__file__).with_name('fixture_gate_plugin.py')
 
 
 class GateLab(Lab):
+    important = True
+
     def __init__(self, args):
         super().__init__(args)
         self.gates = {}
@@ -30,8 +32,9 @@ class GateLab(Lab):
             name = log.parent.name
             if name in self.gates:
                 command = [arg for arg in command if not str(arg).startswith(
-                    ('--important-plugin='+str(PLUGIN), '--swap-gate-profile='))]
-                command = [*command, '--important-plugin='+str(PLUGIN),
+                    ('--important-plugin='+str(PLUGIN), '--plugin='+str(PLUGIN), '--swap-gate-profile='))]
+                option = '--important-plugin=' if self.important else '--plugin='
+                command = [*command, option+str(PLUGIN),
                            '--swap-gate-profile='+self.gates[name]]
             self.commands[name] = list(command)
         return super().start(command, log)
