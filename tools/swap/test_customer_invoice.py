@@ -199,6 +199,25 @@ class Tests(unittest.TestCase):
         self.a.pause(self.gid)
         with self.assertRaises(ValueError): self.call('plan',invoice='lnbcrt1synthetic')
 
+    def test_enrolled_inspection_is_readonly_owned_and_works_with_held_channel(self):
+        self.enrolled(); before = [j.path.read_bytes() for j in self.journals]
+        self.node.rows[0]['htlcs'] = [dict(direction='in',id=3)]
+        with self.assertRaises(ValueError): self.call('inspect',amount_msat=2000000)
+        report = self.call('inspect',entry_id=self.eid)
+        self.assertEqual(report['entry_id'],self.eid); self.assertNotIn('hints',report)
+        self.assertFalse(report['channel_ready'])  # no committed binding in this synthetic entry
+        self.assertEqual(report['reserve_msat'],50000000)
+        self.assertEqual(before,[j.path.read_bytes() for j in self.journals])
+        for body in (dict(entry_id='0'*64),dict(entry_id=self.eid,amount_msat=2000000)):
+            with self.assertRaises(ValueError): self.call('inspect',**body)
+        # An existing entry owned by another grant is also refused.
+        other = copy.deepcopy(self.a.record); gid = self.gid; old = other['grants'][gid]['terms']
+        terms = dict(old,nonce='99'*32); other_id = ba.digest(terms)
+        other['grants'][other_id] = dict(terms=terms,paused=False)
+        other['current']['incoming'] = other_id
+        self.a.commit(other); self.r.enable(other_id,confirmed=True); self.gid = other_id
+        with self.assertRaisesRegex(ValueError,'enrollment_outside_grant'): self.call('inspect',entry_id=self.eid)
+
     def test_service_closes_all_three_locks_and_keeps_old_methods_unavailable(self):
         self.grant(); self.close()
         config = dict(network='regtest',startup=True,**{'lightning-dir':str(self.root),'rpc-file':'lightning-rpc'})

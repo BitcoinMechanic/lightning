@@ -1,6 +1,26 @@
 # Swap protocol boundary (0066)
 
-Latest addition: **0078** adds fresh customer-scoped credentials, bounded
+Latest addition: **0080** adds a durable cross-chain worker. It saves explicit
+confirmation before enrollment, publishes the original signed customer invoice,
+binds the committed incoming HTLC and current per-chain safety margin, then
+records its sole outgoing-send intent. Lost replies and fresh processes never
+replace the route, price, invoice, incoming binding or outgoing attempt. Unknown
+sends remain unresolved. Release requires the original outgoing preimage and
+terminal payment/HTLC evidence; failure requires a terminal failed attempt or
+proof that this worker never submitted a payment. Both sides must reconcile
+terminal history before the worker reports completion.
+
+The VM runner retains both 0078 matrices and adds six actual cross-chain cases:
+release, failure and pending restart in each direction, through public prefixes
+and private tails. Worker SIGKILL controls cover enrollment, invoice, send and
+resolution replies; restart cases restart all eight Lightning nodes and pause
+and expire the enrolled grants. `test_cross_worker.py` and
+`test_cross_fixture.py` are local tests, not funded evidence. The real matrix
+must pass on the packaging VM. This is regtest source only: synthetic price
+snapshots, scoped commando transport, no HTTPS, UI or installer activation.
+See `coordinator-port.md` for the remaining recovery boundaries.
+
+**0078** adds fresh customer-scoped credentials, bounded
 read-only route planning/inspection, and a durable signed customer invoice
 publisher. Its separate method and journals do not upgrade 0076 credentials.
 `cross_contract.py` binds both protocol-specific grants, a route, incoming terms

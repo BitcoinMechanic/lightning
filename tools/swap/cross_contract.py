@@ -1,8 +1,8 @@
 """Immutable cross-chain terms and admission checks; disposable regtest only.
 
-This is policy/data, not an executor or proof of human approval. The future
-worker must durably record the exact confirmed digest before remote enrollment,
-and must preserve evidence before its sole outgoing send. No legacy conversion.
+This is policy/data, not an executor or proof of human approval. cross_worker
+records the exact confirmed digest before enrollment and preserves evidence
+before its sole outgoing send. No legacy conversion.
 """
 import copy
 import secrets
@@ -80,9 +80,10 @@ def digest(c):
     return ba.digest(validate(c))
 
 
-def inspection(c, kind, observed, now):
+def inspection(c, kind, observed, now, *, entry_id=None):
     g = c['grants'][kind]
-    fields = {'format', 'checked_at', 'info', 'blockheight', 'reserve_msat'} | ({'hints'} if kind == 'incoming' else set())
+    fields = {'format', 'checked_at', 'info', 'blockheight', 'reserve_msat'}
+    fields |= {'entry_id','channel_ready'} if entry_id is not None else {'hints'} if kind == 'incoming' else set()
     hg.need(type(observed) is dict and set(observed) == fields and observed['format'] == remote.FORMAT
             and hg.integer(observed['checked_at'], now-OBSERVATION_SECONDS, now)
             and hg.integer(observed['blockheight'], 0, 2**32-1)
@@ -93,7 +94,11 @@ def inspection(c, kind, observed, now):
             and info['paused'] is False and info['current'] is True and info['regtest_only'] is True
             and hg.integer(info['remaining'], 0, g['limits']['max_swaps'])
             and hg.integer(info['reserved_msat'], 0, g['limits']['total_amount_msat']), 'contract_grant_changed')
-    if kind == 'incoming': invoice.validate_hints(observed['hints'], c['incoming'])
+    if entry_id is not None:
+        expected = ba.digest(dict(grant_id=ba.digest(g), payload=c[kind]))
+        hg.need(entry_id == expected and observed['entry_id'] == expected, 'contract_enrollment_changed')
+        hg.need(observed['channel_ready'] is True, 'contract_channel_not_ready')
+    elif kind == 'incoming': invoice.validate_hints(observed['hints'], c['incoming'])
     return info
 
 

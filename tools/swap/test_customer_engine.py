@@ -72,7 +72,7 @@ class Client(previous.Client):
         return path.read_text().splitlines() if path.exists() else []
 
 
-def topology(lab,label,profile):
+def topology(lab,label,profile,*,grant_amount_msat=None):
     lab.checkpoint(label+'-customer-runtime-preflight')
     backend = lab.backend(label+'-chain',profile == ci.PRIVKEYIO_XBT)
     nodes = [lab.lightning(label+'-'+name,profile,backend) for name in ('source','public','hint','recipient')]
@@ -102,7 +102,7 @@ def topology(lab,label,profile):
     grants = []
     for n,peer,kind in ((nodes[0],nodes[1],'outgoing'),(nodes[-1],nodes[-2],'incoming')):
         worker = local.Worker(lab,dict(n,root=state_dir(n)),fresh=True)
-        amount = routes.AMOUNT+(2000 if kind=='outgoing' else 0)
+        amount = grant_amount_msat if grant_amount_msat is not None else routes.AMOUNT+(2000 if kind=='outgoing' else 0)
         bounds = dict(max_swaps=4,max_amount_msat=amount,total_amount_msat=amount*3)
         bounds.update(routes.BOUNDS if kind=='outgoing' else dict(min_cltv_delta=350,max_cltv_delta=2016))
         grants.append(worker.call('create_grant',kind,[hg.channel_pin(routes.edge(lab,n,peer),profile)],

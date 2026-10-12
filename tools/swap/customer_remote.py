@@ -64,11 +64,24 @@ class Remote(base.Remote):
             ba.payload(plan, g)
             return plan
         if op == 'inspect':
-            hg.need(set(body) == ({'amount_msat'} if g['kind'] == 'incoming' else set()), 'remote_parameters_invalid')
+            enrolled = set(body) == {'entry_id'}
+            if enrolled:
+                e, _ = a.entry(body['entry_id'], g['kind'])
+                hg.need(e['grant_id'] == gid, 'enrollment_outside_grant')
+            else:
+                hg.need(set(body) == ({'amount_msat'} if g['kind'] == 'incoming' else set()), 'remote_parameters_invalid')
             height = a.read_node(admission=True)
             result = dict(format=FORMAT, checked_at=int(a.clock()), info=info,
                           blockheight=height, reserve_msat=reserve(a.rpc('listfunds')))
-            if g['kind'] == 'incoming':
+            if enrolled:
+                # Same scoped read authority, exact enrollment only. A held
+                # channel is no longer available to advertise another invoice.
+                result['entry_id'] = body['entry_id']
+                pin = e['payload']['channel'] if g['kind'] == 'outgoing' else e.get('incoming', {}).get('binding', {}).get('channel')
+                row = a.channel(pin) if pin is not None else None
+                result['channel_ready'] = row is not None and row.get('peer_connected') is True \
+                    and row.get('reestablished') is True and (g['kind'] == 'incoming' or row['htlcs'] == [])
+            elif g['kind'] == 'incoming':
                 amount = body['amount_msat']
                 hg.need(hg.integer(amount, 1, g['limits']['max_amount_msat']), 'outside_grant')
                 # Hints describe reachability; approved funding pins remain in

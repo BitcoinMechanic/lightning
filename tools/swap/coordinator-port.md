@@ -1,4 +1,87 @@
-# Coordinator port boundaries (0078)
+# Coordinator port boundaries (0080)
+
+## Durable cross-chain worker (0080)
+
+Base: annotated `privkeyio-customer-20261011`, engine tree
+`185c768045321a6126c7c1c85d9b019a1c6ff8c9`. The operator reported both 0078
+matrices passed, completed the 0079 tower checkpoint, then synced the VM.
+This patch changes only `tools/swap` Python sources and documentation. It reuses
+the exact compiled crash-fixed engines and preserves existing authority scope.
+
+`cross_worker.py` owns a new private, locked, atomically replaced
+`swap-cross-worker-v1` journal. Missing state is not automatically recreated;
+old worker formats are not imported. The contract digest binds both grants,
+full outgoing route, independent incoming secret, immutable market terms and
+expiry. Confirmation is persisted before either enrollment. Enrollment IDs are
+derived from the exact grant and payload and checked on every reply. Enroll,
+publication and resolution intents recover only their same idempotent operation.
+One unresolved swap prevents preparing another in that worker journal.
+
+The authenticated transport is supplied by a trusted caller and must pin its
+endpoint and saved customer credential to the contract's grant. The worker has
+no raw local RPC, route search, credential minting, grant renewal or repricing.
+The fixture driver uses CLN commando, whose peer ID and rune enforce that
+boundary. A production HTTPS/pairing transport remains separate work.
+
+The existing scoped `inspect` operation now also accepts exactly an `entry_id`
+owned by that grant. It returns current synced height, reserve, grant status
+and readiness of the bound channel
+without trying to advertise an already-held receiving channel. It is read-only;
+the operation/rune sets and all payment permissions remain unchanged. Old
+`swap-authority-call` credentials still cannot call the customer interface.
+
+Before sending, the worker stores fresh enrolled inspections, the exact
+committed incoming channel/HTLC/expiry and the unsent outgoing enrollment. It
+checks reserves, active grants, quote expiry and remaining incoming blocks
+against the saved outgoing relative delay plus safety margin. Heights of the
+two independent chains are never subtracted. The durable send intent precedes
+the single outgoing send call. After that intent, the worker only observes the
+original attempt; even an empty node record cannot authorize resubmission or
+incoming failure. A crash before request delivery therefore remains uncertain.
+
+Every observed entry is revalidated against the original grant and payload.
+Previously recorded fields cannot disappear or change, except the defined
+publication and pending-attempt progressions. A pre-existing unowned send or
+resolution is refused. Release requires the outgoing attempt's validated
+preimage and terminal HTLC history. A failed outgoing attempt must also be
+terminal before failure is propagated. Release/failure intent is saved before
+the remote gate call; a reply alone never means the incoming HTLC settled.
+Completion requires both node authorities' terminal evidence.
+
+Paused or expired grants continue enrolled recovery after send. Before any
+send intent, an expired but held quote can fail safely; explicit cancellation
+has the same no-send requirement. Unsent outgoing reservations retire only
+after recipient-invoice expiry with the node's empty-history checks. Unpaid
+published quotes likewise wait for outgoing retirement. Interrupted setup that
+cannot recover its original enrollment/publication remains blocked; this patch
+does not invent an abandonment operation or bypass authority history. A restore
+marker blocks all execution and invoice access while preserving redacted cached
+status. Closing-channel/on-chain recovery and restored-backup handling remain
+separate work; this is not an on-chain recovery or power-loss claim.
+
+The funded fixture uses four nodes on each of two independent chains. Both
+coordinator legs have a two-edge public prefix and private final channel; neither
+customer has a direct channel to its coordinator. BTC and XBT heights differ.
+The recipient receives 4,000 sats. Fixed synthetic Neoxa-shaped snapshots at
+bid 0.49 / ask 0.5 and zero markup produce different incoming amounts including
+the outgoing fee, both above the previous 2,000-sat fixture's dust threshold.
+No live market fetch is claimed. The outgoing recipient fixture holds its own
+invoice to control failure/restart; only that fixture owns its preimage. The
+worker learns it from outgoing payment evidence and controls incoming release.
+Incoming customer hashes must have no core invoice entry.
+
+Each worker operation runs in a fresh process. SIGKILL after successful remote
+enrollment, invoice publication, payment send and resolution checks reply-loss
+recovery without a second payment. Both directions test release, failure and
+all-eight-daemon restart while pending; enrolled grants are then paused and
+their fixture clocks expired. Receipts require unchanged contract, invoice,
+actual incoming binding, both HTLC histories, original attempt and all twelve
+channel balances. The prior twelve remote/customer cases also run on the new
+overlay. Only the VM's complete eighteen-case receipt set can print READY.
+
+Scope remains isolated regtest source: no StartOS installer, production node
+activation, full UI/pairing, HTTPS/CLNrest, live market feed, on-chain recovery,
+automatic payment retries, MPP or legacy funded-channel migration.
 
 ## Customer contract and publication interface (0078)
 
