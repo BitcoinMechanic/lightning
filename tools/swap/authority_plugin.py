@@ -25,11 +25,13 @@ def manifest():
 
 
 class RPC:
+    methods = ba.METHODS | remote.SETUP_METHODS
+
     def __init__(self, configuration):
         self.path = gp.ReadRPC(configuration).path
 
     def __call__(self, method, **params):
-        hg.need(method in ba.METHODS | remote.SETUP_METHODS, 'local_rpc_refused')
+        hg.need(method in self.methods, 'local_rpc_refused')
         request = dict(jsonrpc='2.0', id='authority-local', method=method, params=params)
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
@@ -84,12 +86,12 @@ class Service:
             journal.close()
 
 
-def main(rpc_factory=RPC, service_factory=Service):
+def main(rpc_factory=RPC, service_factory=Service, manifest_factory=manifest):
     service = None
     for request in gp.requests(sys.stdin):
         method = request['method']
         if method == 'getmanifest':
-            gp.emit(gp.response(request['id'], manifest())); continue
+            gp.emit(gp.response(request['id'], manifest_factory())); continue
         if method == 'init':
             hg.need(service is None, 'already_initialized')
             p = request['params']

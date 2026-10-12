@@ -1,6 +1,17 @@
 # Swap protocol boundary (0066)
 
-Latest addition: **0076** adds fresh grant-scoped rune credentials and a static
+Latest addition: **0078** adds fresh customer-scoped credentials, bounded
+read-only route planning/inspection, and a durable signed customer invoice
+publisher. Its separate method and journals do not upgrade 0076 credentials.
+`cross_contract.py` binds both protocol-specific grants, a route, incoming terms
+and exact Neoxa quote arithmetic; its confirmation and timing checks are data
+policy, not an executing controller. Local tests are `test_customer_invoice.py`,
+`test_cross_contract.py` and `test_customer_fixture.py`. The VM runner retains
+the 0076 remote matrix and adds six funded signed-invoice recovery cases with
+no corresponding core invoice entry. Full cross-chain execution remains next;
+there is no installer, HTTPS activation or live market feed in this patch.
+
+**0076** adds fresh grant-scoped rune credentials and a static
 regtest remote facade. Lost mint replies recover the exact stored credential;
 uncertain absence never permits another mint. The funded fixture uses real CLN
 commando authentication on both engines, including raw-method refusals and

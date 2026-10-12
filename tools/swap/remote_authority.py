@@ -23,12 +23,12 @@ OPERATIONS = {
 SETUP_METHODS = frozenset(('createrune', 'showrunes'))
 
 
-def restrictions(gid, kind):
-    hg.need(ba.ci.hex_field(gid, 64) and kind in OPERATIONS, 'credential_scope_invalid')
+def restrictions(gid, kind, *, operations=OPERATIONS, method=CALL):
+    hg.need(ba.ci.hex_field(gid, 64) and kind in operations, 'credential_scope_invalid')
     # No time restriction: admission expiry is in the durable grant, while
     # already enrolled recovery must remain available after that deadline.
-    return [['method='+CALL], ['pnamegrant_id='+gid], ['pnum=3'],
-            ['pnameoperation='+op for op in OPERATIONS[kind]]]
+    return [['method='+method], ['pnamegrant_id='+gid], ['pnum=3'],
+            ['pnameoperation='+op for op in operations[kind]]]
 
 
 def token(value):
@@ -42,9 +42,9 @@ def credential(value):
     return value
 
 
-def validate(record, authority):
+def validate(record, authority, *, format_name=FORMAT):
     hg.need(type(record) is dict and set(record) == {'schema', 'format', 'chain', 'credentials'}
-            and type(record['schema']) is int and record['schema'] == 1 and record['format'] == FORMAT,
+            and type(record['schema']) is int and record['schema'] == 1 and record['format'] == format_name,
             'remote_format_refused')
     ba.ci.same_binding(hg.binding(record['chain']), authority.chain)
     hg.need(type(record['credentials']) is dict and len(record['credentials']) <= ba.MAX_RECORDS,
@@ -61,12 +61,12 @@ def validate(record, authority):
     return record
 
 
-def initialize_fixture(directory, chain):
+def initialize_fixture(directory, chain, *, format_name=FORMAT):
     """Fresh fixture state; never import or renew old credentials."""
     directory = Path(directory); hg.binding(chain)
     hg.need(not any(p.is_symlink() for p in (directory, *directory.parents)), 'remote_symlink_refused')
     directory.mkdir(mode=0o700)
-    value = dict(schema=1, format=FORMAT, chain=chain, credentials={})
+    value = dict(schema=1, format=format_name, chain=chain, credentials={})
     fd = os.open(directory/'state.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump(value, stream); stream.flush(); os.fsync(stream.fileno())
@@ -93,9 +93,14 @@ def decoded_restrictions(row):
 
 class Remote:
     """Caller holds authority lock THEN credential lock for the whole request."""
+    format_name, method, operations = FORMAT, CALL, OPERATIONS
+
+    def restrictions(self, gid, kind):
+        return restrictions(gid, kind, operations=self.operations, method=self.method)
+
     def __init__(self, authority, journal, setup_rpc):
         self.authority, self.journal, self.rpc = authority, journal, setup_rpc
-        self.record = copy.deepcopy(validate(journal.read(), authority))
+        self.record = copy.deepcopy(validate(journal.read(), authority, format_name=self.format_name))
         self.blocked = False
 
     def guard(self):
@@ -104,7 +109,7 @@ class Remote:
         hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_remote_blocked')
 
     def commit(self, record):
-        self.guard(); validate(record, self.authority)
+        self.guard(); validate(record, self.authority, format_name=self.format_name)
         try: self.journal.write(record)
         except Exception:
             self.blocked = True
@@ -117,7 +122,7 @@ class Remote:
         matches = []
         for row in result['runes']:
             hg.need(type(row) is dict, 'rune_inventory_invalid')
-            if ba.equal(decoded_restrictions(row), restrictions(gid, kind)):
+            if ba.equal(decoded_restrictions(row), self.restrictions(gid, kind)):
                 hg.need(row.get('stored', True) is True and row.get('our_rune', True) is True
                         and row.get('blacklisted', False) is False, 'credential_unavailable')
                 matches.append(credential({k: row.get(k) for k in ('rune', 'unique_id')}))
@@ -141,7 +146,7 @@ class Remote:
             hg.need(found is None, 'unowned_credential')
             new = copy.deepcopy(self.record); new['credentials'][gid] = dict(intent=True)
             self.commit(new)
-            result = credential(self.rpc('createrune', restrictions=restrictions(gid, kind)))
+            result = credential(self.rpc('createrune', restrictions=self.restrictions(gid, kind)))
             found = self.stored(gid, kind)
             hg.need(ba.equal(result, found), 'credential_reply_uncertain')
         else:
@@ -151,7 +156,7 @@ class Remote:
         if self.record['credentials'][gid].get('credential') != found:
             new = copy.deepcopy(self.record); new['credentials'][gid]['credential'] = found
             self.commit(new)
-        return dict(format=FORMAT, chain=copy.deepcopy(self.authority.chain), grant_id=gid, **found)
+        return dict(format=self.format_name, chain=copy.deepcopy(self.authority.chain), grant_id=gid, **found)
 
     def call(self, params):
         """Only for a request already authorized by the node's rune transport."""
@@ -162,12 +167,12 @@ class Remote:
         saved = self.record['credentials'].get(gid)
         hg.need(saved is not None and 'credential' in saved, 'credential_setup_unfinished')
         a = self.authority; g = a.record['grants'][gid]['terms']
-        hg.need(type(op) is str and op in OPERATIONS[g['kind']] and type(body) is dict,
+        hg.need(type(op) is str and op in self.operations[g['kind']] and type(body) is dict,
                 'remote_operation_refused')
         if op == 'info':
             hg.need(not body, 'remote_parameters_invalid'); a.read_node()
             own = [e for e in a.record['entries'].values() if e['grant_id'] == gid]
-            return dict(format=FORMAT, grant=copy.deepcopy(g), paused=a.record['grants'][gid]['paused'],
+            return dict(format=self.format_name, grant=copy.deepcopy(g), paused=a.record['grants'][gid]['paused'],
                 current=a.record['current'][g['kind']] == gid, remaining=g['limits']['max_swaps']-len(own),
                 reserved_msat=sum(ba.payload(e['payload'], g) for e in own), regtest_only=True)
         if op == 'enroll':

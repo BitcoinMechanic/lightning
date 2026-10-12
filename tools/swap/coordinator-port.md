@@ -1,4 +1,76 @@
-# Coordinator port boundaries (0076)
+# Coordinator port boundaries (0078)
+
+## Customer contract and publication interface (0078)
+
+Base: annotated `privkeyio-remote-20261011`, engine tree
+`45d99f93e565b851b941bec1aed5d0b9567fe34a`. The operator reported the complete
+0076 remote matrix passed, then completed the 0077 tower checkpoint and VM
+sync. This patch reuses the compiled engines and all bounded payment rules.
+
+`customer_remote.py` uses new method `swap-customer-call`, fresh explicit local
+`swap-customer-credential` setup and format `swap-customer-remote-v1`. Old
+`swap-authority-call` runes cannot invoke it; old journals are never relabelled.
+Its existing enroll/send/release operations retain the same finite local
+authority. Incoming adds `inspect` and `invoice`; outgoing adds `inspect` and
+`plan`. No request chooses an RPC method, directory or widened planning limits.
+The old facade still has exactly its previous operations and RPC allowlist.
+
+`plan` takes only a recipient invoice and uses the grant's approved pins and
+fee/delay/hop ceilings. It creates no enrollment or payment. `inspect` returns
+the exact grant, fresh identity-checked height and confirmed unreserved wallet
+balance; incoming inspection also checks receiving liquidity, remote hint
+policy and the conservative fee/dust threshold. No endpoint, credential or
+raw wallet output is returned. The caller must treat inspection as private
+execution data, not operator status.
+
+`customer_invoice.py` requires an already registered incoming enrollment. It
+saves timestamp, hints and unsigned bytes in a third locked journal before
+signing. Hints use the peer's remote alias when required; admission is still
+bound to approved funding/signing-type pins. A lost signature reply can only
+sign the same bytes. A saved invoice reply is returned unchanged after pause,
+expiry and restart. Every signed/cached reply is decoded by CLN and checked
+for profile, hash, secret, payee, exact amount, description, expiry, final CLTV,
+all hints and the exact one-part feature vector. No core invoice or preimage
+is created. First publication after expiry refuses. Write uncertainty freezes
+the instance; a restore marker in any journal blocks the whole facade. Lock
+order is authority, credential, publication, with fresh state per operation.
+
+`cross_contract.py` defines `swap-cross-contract-v1`: both immutable grants,
+explicit BTC/new-XBT identities, exact outgoing plan, independently secreted
+incoming quote and a Neoxa price snapshot. `market_quote.py` ports the installed
+controller's quote arithmetic unchanged, without its legacy profiles or grant
+logic. The quote includes routing cost, uses asks forward and bids reverse,
+and defaults to zero markup when the caller supplies the normal zero setting;
+the saved markup is explicitly confirmed. There is no HTTP fetch in this port.
+Every term contributes to the confirmation digest. New admission checks fresh
+observations, 50,000,000-msat confirmed unreserved reserves on both nodes,
+grant budgets and expiry. The incoming minimum covers the outgoing relative
+delay plus 6 propagation and 144 recovery blocks; the payer invoice adds 24
+blocks. Heights on independent chains are never subtracted from each other.
+The held-margin helper requires the exact remote enrollment and committed
+incoming binding. Recovery must not reprice or replace this contract.
+
+The contract is policy/data, not durable approval or a worker. The next worker
+must save explicit confirmation before enrollment, preserve both enrollment
+IDs and actual incoming/attempt evidence, record its sole-send intent, release
+only from a validated outgoing preimage, and keep unknown sends unresolved.
+Closing-channel/on-chain recovery and backup restore remain separate gates.
+
+The 0078 VM matrix first repeats 0076 against the shared credential refactor.
+It then tests independently signed customer invoices over two public edges
+and a private final channel, on both engines, with release, failure and held
+restart. Customer hashes must be absent from the core invoice database before
+and after payment. Fresh workers must return identical invoice bytes and HTLC
+binding after lost sign/publication/resolution replies; all six channel balances
+and the original one-part payment attempt must agree. The fixture's customer
+pays a 374-block final delta; this does not widen the coordinator's 288-block
+outgoing grant. Old-rune/raw-method refusals and read-only planning are checked
+through actual commando. Local tests and synthetic receipt tests do not prove
+the funded matrix; only the VM verifier can report READY.
+
+Scope: no complete cross-chain worker, StartOS installer/UI activation,
+HTTPS/CLNrest, live market-priced settlement, on-chain recovery or legacy funded
+channel migration is claimed by 0078. The installed swap flow stays separate.
 
 ## Remote authority boundary (0076)
 
