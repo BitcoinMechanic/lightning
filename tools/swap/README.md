@@ -1,6 +1,23 @@
 # Swap protocol boundary (0066)
 
-Latest addition: **0080** adds a durable cross-chain worker. It saves explicit
+Latest addition: **0082** connects the migrated worker through native CLNrest
+HTTPS with a private, immutable pairing journal. Both exact grants and node
+identities are checked before pairing is saved. Every fresh process retains
+the same endpoints, CA bundles and scoped credentials. Certificate/hostname
+verification is mandatory; there are no redirects, proxies, raw RPC methods,
+fallback transports or automatic retries. Uncertain transport replies preserve
+the existing recovery rules. Cached status performs no network requests.
+
+The VM runner retains all eighteen prior funded cases and adds six HTTPS cases:
+both directions, failure, worker SIGKILL reply recovery and pending restart.
+It verifies and reuses the CLNrest release binaries already present in the
+compiled fixture image. `test_customer_https.py` checks transport/pairing
+boundaries; `test_https_fixture.py` exercises real local TLS and subprocess
+recovery with synthetic responses (requires openssl for disposable certificates).
+Only the packaging VM can establish the funded native CLNrest result. No
+StartOS installer, live market fetch or production activation is added.
+
+**0080** adds a durable cross-chain worker. It saves explicit
 confirmation before enrollment, publishes the original signed customer invoice,
 binds the committed incoming HTLC and current per-chain safety margin, then
 records its sole outgoing-send intent. Lost replies and fresh processes never

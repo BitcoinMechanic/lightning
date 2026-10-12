@@ -1,4 +1,138 @@
-# Coordinator port boundaries (0080)
+# Coordinator port boundaries (0082c)
+
+## Transport-specific authorization errors (0082c)
+
+The 0082b HTTPS fixture reached both funded topologies, then asserted the
+commando authorization wrapper code 19537 against a native CLNrest response.
+CLNrest forwards the core `checkrune` error: a scope restriction is HTTP 401
+with code 1502, as the pinned `tests/test_clnrest.py` also requires. A validly
+encoded rune with an altered signature returns HTTP 401 with code 1501.
+Positional arrays are a distinct parser rejection (HTTP 500, no RPC code),
+before authorization. None of these responses proves a permitted mutation.
+
+The fixture now checks each case strictly, including the error-object shape,
+and records only its fixed case/profile/role labels, HTTP status and numeric
+RPC code in `https-scope.jsonl`. It never includes remote messages, data,
+parameters or credentials. All denied calls must leave the mutation log
+unchanged. Synthetic regression tests cover all 48 requests on both chains
+and both coordinator roles; funded enforcement still requires the VM run.
+No credential restrictions, daemon binaries or worker behavior change.
+
+The runner retains the original eighteen completed 0082a peer-case receipts
+with their own unchanged provenance and runs six fresh HTTPS cases. Native
+startup evidence keeps its original 0082b fixture identifier; that preflight
+has not changed.
+
+## Explicit native plugin registration (0082b)
+
+The 0082a run completed the retained eighteen funded cases, then the first
+HTTPS node rejected `--clnrest-host` as unknown. The 0070 engines were built
+with `--disable-rust`: `plugins/Makefile` excludes CLNrest from the generated
+built-in list, and `plugins_set_builtin_plugins_dir` loads that list rather
+than scanning installed files. Copying the pinned binary alone was insufficient.
+
+The HTTPS fixture now explicitly registers the corresponding prefix's CLNrest
+with `--important-plugin` before startup and checks it is active before TLS
+readiness. Restarts keep one registration, the original port and certificates.
+Intermediate nodes keep CLNrest disabled. No daemon binary or worker changes.
+
+`test_clnrest_startup.py` drives the actual pinned BTC and XBT release plugins
+through getmanifest/init, verifies certificate-authenticated HTTPS with
+missing-rune rejection, and restarts on the same certificates after pipe EOF.
+This needs no daemon RPC or funded wallet and is a preflight, not payment
+evidence. The packaging runner can retain the exact completed 0082a remote,
+customer and peer-worker receipts after checking their original provenance,
+unchanged runtime sources and matching backend/checkpoint pins. It runs six
+fresh funded HTTPS cases and keeps retained provenance separately. A full run
+without prior receipts starts with HTTPS to catch startup errors before funding
+the other matrices.
+
+## Reply-time admission correction (0082a)
+
+The retained peer cross-chain matrix exposed confirmation sampling `now`
+before its two inspections. A normal reply across a second boundary was
+therefore misclassified as future evidence. Confirmation now samples time
+after both replies and uses that time for admission and durable approval.
+The 30-second observation bound, future-timestamp rejection and quote expiry
+remain unchanged. A delay that makes either observation stale or crosses
+quote expiry refuses before approval or enrollment. Other worker admission
+paths already sample time after inspection; their behavior is retained.
+
+The same audit found pairing could save grants that expired during its
+read-only identity calls. Both grants are now checked against the time after
+both replies, before the pairing write. Deterministic regressions reproduce
+the original confirmation refusal in both directions and the pairing expiry
+case. Unit/TLS tests are local evidence; the complete twenty-four funded VM
+cases are still required. No compiled engine or credential scope changes.
+
+## Saved HTTPS pairing and native CLNrest (0082)
+
+Base: annotated `privkeyio-cross-worker-20261012`, engine tree
+`7746f2d1dee1169d3cb55826eee769f8d6d10d30`. The operator reported all eighteen
+0080 cases passed, then completed the 0081 tower checkpoint and VM sync.
+
+`customer_https.py` exposes only `swap-customer-call` and its existing named
+operation schemas. Endpoints are canonical HTTPS origins. The supplied CA
+bundle is the trust store, with hostname verification and TLS 1.2 minimum.
+The client has no proxy environment support, redirect following, raw RPC,
+transport fallback or automatic retry. Every operation first checks the exact
+saved grant through authenticated `info`; the coordinator validates its current
+node identity before returning it. Recovery may inspect expired/paused grants.
+The worker and node remain responsible for new-admission checks.
+
+CLNrest's pinned success response is HTTP 201 with a JSON object. Request and
+response size are bounded; duplicate keys and non-finite JSON constants refuse.
+All HTTP/TLS/parse failures return a fixed private-safe uncertainty label. A
+refused or missing response never means that a send or release did not happen.
+The existing sole-send rule remains in the unchanged cross-chain worker.
+
+`worker_pairing.py` stores a separate private, locked, atomic
+`swap-worker-https-pairing-v1` journal. Explicit fresh setup verifies both
+coordinators with read-only calls before saving direction, grants, endpoints,
+CA bundles and scoped credentials. The binding is immutable. Every fresh worker
+loads it and checks all contracts against its exact grants before any request.
+Missing pairing is not reconstructed during recovery. Credential rotation and
+grant renewal are separate service integration work. No old authority or
+pairing is promoted to the migrated protocol.
+
+Lock order is pairing then worker. An uncertain pairing write freezes that
+instance; a fresh process reads the durable result. Either restore marker
+blocks execution and invoice access. Cached status remains available, without
+credentials, endpoints or network requests. This is a restore barrier, not
+proof that executing a restored backup is safe.
+
+The 0082 fixture adds six funded cases through native CLNrest HTTPS, retaining
+the prior eighteen peer-RPC cases. It reuses both compiled C engines. Their
+prefixes lack Rust plugins, so the overlay checks and copies only CLNrest from
+the exact BTC release and original XBT release already in the image. No C/Rust
+rebuild or external download is required. A fixed binary hash mismatch refuses
+before funded execution.
+
+CLNrest generates per-node certificates in disposable directories. Rune checks
+exercise wrong methods, grants, parameter counts, operations and forged runes;
+wrong CA/identity refuses. JSON arrays are rejected by CLNrest parsing before
+rune authorization, and are checked separately. Coordinator logs remain local:
+CLNrest can log private request parameters, so raw logs and credential, pairing,
+worker and payment journals never enter the diagnostic archive.
+
+Recipient route planning also uses the scoped HTTPS client. The HTTPS worker
+process receives configuration only during explicit pairing.
+Subsequent processes receive an action and contract ID and read saved pairing.
+Both directions retain confirmation, one part/attempt, public-prefix/private-
+tail routes, worker SIGKILL after four reply boundaries, pending daemon restart,
+paused/expired enrolled recovery, original invoice/bindings/HTLCs/attempt and
+exact twelve balances. The shared cross-chain scenario has an injectable test
+driver; the prior worker algorithm and peer fixture behavior remain unchanged.
+
+Local tests also use real TLS sockets with synthetic coordinator responses,
+including wrong CA/hostname, redirect refusal, actual process kills and a send
+reply dropped after execution. These are not funded CLNrest evidence; the VM
+must run all twenty-four funded cases before READY.
+
+Scope remains regtest source integration. StartOS service wiring and full node
+UI, live market fetching, on-chain/backup recovery, legacy funded-channel
+migration and production activation remain pending. Pairing does not replace
+the installed controller's existing read-only probe or live execution paths.
 
 ## Durable cross-chain worker (0080)
 

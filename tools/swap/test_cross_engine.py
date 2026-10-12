@@ -42,17 +42,22 @@ class DriverError(subprocess.CalledProcessError):
 
 
 class Driver:
+    script = DRIVER
+
     def __init__(self, lab, directory, clients):
         self.lab,self.directory,self.clients = lab,directory,clients
         self.cid = None; self.processes = 0
 
-    def run(self, action, *, fault=None, crash=False, **kwargs):
+    def request(self, action, **kwargs):
         transports = {kind:dict(cli=list(map(str,c.caller['cli'])),peer_id=c.node['identity']['node_id'],
             grant_id=c.gid,rune=c.credential['rune']) for kind,c in self.clients.items()}
-        request = dict(directory=str(self.directory),clients=transports,action=action,contract_id=self.cid,**kwargs)
+        return dict(directory=str(self.directory),clients=transports,action=action,contract_id=self.cid,**kwargs)
+
+    def run(self, action, *, fault=None, crash=False, **kwargs):
+        request = self.request(action,**kwargs)
         if fault: request['fault'] = fault
         marker = self.directory/'fault-consumed'; marker.unlink(missing_ok=True)
-        proc = subprocess.Popen([sys.executable,str(DRIVER),'--disposable-regtest'],
+        proc = subprocess.Popen([sys.executable,str(self.script),'--disposable-regtest'],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         self.processes += 1
         try: stdout,stderr = proc.communicate(json.dumps(request),timeout=120)
@@ -130,7 +135,7 @@ def deltas(amount, paid):
     return [-amount-2000,amount+2000,-amount-1000,amount+1000,-amount,amount] if paid else [0]*6
 
 
-def scenario(lab,topologies,direction,name):
+def scenario(lab,topologies,direction,name,*,driver_class=Driver,contract_factory=contract):
     lab.checkpoint(direction+'-cross-'+name)
     ia,oa = ('btc','xbt') if direction=='forward' else ('xbt','btc')
     ib,ins,ic = topologies[ia]; ob,outs,oc = topologies[oa]
@@ -138,9 +143,9 @@ def scenario(lab,topologies,direction,name):
     before = {asset:[r['to_us_msat'] for _,r in routes.endpoints(lab,t[1])] for asset,t in topologies.items()}
     incoming,outgoing = ic[1],oc[0]
     bolt,preimage = recipient_invoice(lab,outs,direction+'-'+name)
-    c = contract(incoming,outgoing,bolt,direction); ph = c['outgoing']['payment_hash']
+    c = contract_factory(incoming,outgoing,bolt,direction); ph = c['outgoing']['payment_hash']
     directory = lab.root/('cross-worker-'+direction+'-'+name); cw.initialize_fixture(directory)
-    driver = Driver(lab,directory,dict(incoming=incoming,outgoing=outgoing))
+    driver = driver_class(lab,directory,dict(incoming=incoming,outgoing=outgoing))
     driver.cid = driver.run('prepare',contract=c)['contract_id']
     require(driver.run('step')['state'] == 'ready_for_confirmation','unconfirmed_worker_advanced')
     require('approval' not in driver.record() and not driver.record()['enroll'],'worker_enrolled_before_confirmation')
@@ -185,7 +190,7 @@ def scenario(lab,topologies,direction,name):
             worker.call('pause',client.gid)
             expiry = c['grants']['incoming' if client is incoming else 'outgoing']['expires_at']
             (customer.state_dir(client.node)/'customer-fixture-time').write_text(str(expiry+1))
-        driver = Driver(lab,directory,dict(incoming=incoming,outgoing=outgoing)); driver.cid = cc.digest(c)
+        driver = driver_class(lab,directory,dict(incoming=incoming,outgoing=outgoing)); driver.cid = cc.digest(c)
         for nodes,held in ((ins,held_in),(outs,held_out)):
             actual = routes.gate.held(lab,nodes[-1],ph)
             require(actual['binding'] == held['binding'] and actual['cltv_expiry'] == held['cltv_expiry'],

@@ -142,6 +142,57 @@ class Tests(unittest.TestCase):
         self.finish(); self.assertEqual(self.w.status(self.cid)['state'],'settled')
         self.assertEqual(self.w.payment_invoice(self.cid),saved); self.assertEqual(self.sends(),1)
 
+    def test_confirmation_accepts_replies_across_second_boundary_in_both_directions(self):
+        for direction in ('forward','reverse'):
+            with self.subTest(direction=direction):
+                self.close(); self.root = Path(self.tmp.name)/('timing-'+direction)
+                cw.initialize_fixture(self.root); self.remote = Remote(direction); self.now = NOW; self.open()
+                cid = self.w.prepare(self.remote.c)
+                def advancing(kind,gid,op,body):
+                    self.assertEqual(op,'inspect')
+                    self.now += 1
+                    self.remote.obs[kind]['checked_at'] = self.now
+                    return self.remote(kind,gid,op,body)
+                self.w.call = advancing
+                self.w.confirm(cid,cid); self.open()
+                self.assertEqual(self.w.record['swaps'][cid]['approval'],dict(digest=cid,at=NOW+2))
+                self.assertEqual(self.w.status(cid)['state'],'setting_up')
+                self.assertFalse(any(op=='enroll' for _,op,_ in self.remote.calls))
+                # Repeating an already durable confirmation performs no I/O.
+                calls = len(self.remote.calls); self.w.confirm(cid,cid)
+                self.assertEqual(len(self.remote.calls),calls)
+
+    def test_confirmation_checks_freshness_and_expiry_after_both_replies(self):
+        for case,reason in [('stale','contract_inspection_unavailable'),
+                            ('future','contract_inspection_unavailable'),
+                            ('expired','contract_admission_expired')]:
+            with self.subTest(case=case):
+                self.close(); self.root = Path(self.tmp.name)/('refuse-'+case)
+                cw.initialize_fixture(self.root); self.remote = Remote(); self.now = NOW; self.open()
+                cid = self.w.prepare(self.remote.c); saved = self.journal.read()
+                def delayed(kind,gid,op,body):
+                    value = self.remote(kind,gid,op,body)
+                    if kind == 'incoming':
+                        if case == 'stale': self.now = NOW+31
+                        elif case == 'future': value['checked_at'] = NOW+1
+                        else: self.now = self.remote.c['pay_until']
+                    return value
+                self.w.call = delayed
+                with self.assertRaisesRegex(ValueError,reason): self.w.confirm(cid,cid)
+                self.assertEqual(self.journal.read(),saved)
+                self.assertFalse(any(op=='enroll' for _,op,_ in self.remote.calls))
+
+        # Exactly 30 seconds old still satisfies the existing freshness bound.
+        self.close(); self.root = Path(self.tmp.name)/'freshness-boundary'
+        cw.initialize_fixture(self.root); self.remote = Remote(); self.now = NOW; self.open()
+        cid = self.w.prepare(self.remote.c)
+        def boundary(kind,gid,op,body):
+            value = self.remote(kind,gid,op,body)
+            if kind == 'incoming': self.now = NOW+30
+            return value
+        self.w.call = boundary; self.w.confirm(cid,cid)
+        self.assertEqual(self.w.record['swaps'][cid]['approval']['at'],NOW+30)
+
     def test_unknown_send_and_transport_error_never_release_fail_or_resend(self):
         self.setup_swap(); self.remote.hold()
         real = self.remote

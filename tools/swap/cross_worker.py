@@ -192,7 +192,10 @@ class Worker:
     def confirm(self, cid, confirmation):
         s = self.swap(cid); hg.need(confirmation == cid and type(confirmation) is str, 'exact_confirmation_required')
         if 'approval' not in s:
-            now = int(self.clock()); cc.confirm(s['contract'],confirmation,self.inspections(s),now=now)
+            # Replies may cross a wall-clock second or consume the quote's
+            # remaining lifetime. Validate and timestamp only after both arrive.
+            reports = self.inspections(s); now = int(self.clock())
+            cc.confirm(s['contract'],confirmation,reports,now=now)
             s['approval'] = dict(digest=cid,at=now); self.commit(cid,s)
         return self.status(cid)
 
