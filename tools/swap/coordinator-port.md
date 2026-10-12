@@ -505,3 +505,15 @@ test, backup restore solution, legacy-channel migration or installable UI.
 
 The local grant/enrollment and send-intent work is now implemented by 0074
 above. Funded bidirectional controller matrices remain a later integration gate.
+
+## 0084 service fixture
+
+`test_service_engine.py` uses the separate controller `migration/` service
+through fresh action processes and a continuously running worker. Both chains
+retain the exact 0083 engine/transport runtime. The fixture supplies synthetic
+market snapshots and SIGKILL hooks through `fixture_service_driver.py`; these
+controls are absent from the service CLI. Six funded cases require exact original
+contracts, signed invoices, incoming bindings, attempts and twelve balances.
+The fixture reuses one journal for three swaps per direction and checks renewed
+grants preserve terminal history, plus cached history with coordinators stopped.
+No installer, StartOS action registration or production activation is included.
