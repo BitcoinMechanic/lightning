@@ -15,6 +15,7 @@ import cross_contract as cc
 import cross_worker as cw
 import customer_https as https
 import held_gate as hg
+import restore_barrier
 
 FORMAT = 'swap-worker-https-pairing-v1'
 
@@ -39,6 +40,7 @@ def validate(value):
 def initialize_fixture(directory):
     directory = Path(directory)
     hg.need(not any(p.is_symlink() for p in (directory,*directory.parents)), 'https_pairing_symlink_refused')
+    hg.need(not restore_barrier.blocked(directory), "restored_initialization_blocked")
     directory.mkdir(mode=0o700)
     fd = os.open(directory/'state.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'w') as stream:
@@ -56,7 +58,7 @@ class Pairing:
 
     def guard(self):
         hg.need(not self.blocked and self.journal.lock_fd is not None, 'https_pairing_blocked')
-        hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_pairing_blocked')
+        hg.need(not restore_barrier.blocked(self.journal.directory), 'restored_pairing_blocked')
 
     def save(self, proposed, *, confirmed=False):
         self.guard(); hg.need(confirmed is True, 'confirmation_required')
@@ -99,7 +101,7 @@ class Pairing:
 
     def status(self):
         return dict(format=FORMAT,paired=self.record['binding'] is not None,
-            blocked=self.blocked or os.path.lexists(self.journal.directory/'restored.json'),
+            blocked=self.blocked or restore_barrier.blocked(self.journal.directory),
             read_only=True,regtest_only=True)
 
 

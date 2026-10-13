@@ -11,6 +11,7 @@ from pathlib import Path
 import bolt11
 import bounded_authority as ba
 import held_gate as hg
+import restore_barrier
 
 FORMAT = 'swap-customer-invoice-v1'
 FIELDS = {'pubkey', 'short_channel_id', 'fee_base_msat',
@@ -133,6 +134,7 @@ def validate(record, authority):
 def initialize_fixture(directory, chain):
     directory = Path(directory); hg.binding(chain)
     hg.need(not any(p.is_symlink() for p in (directory, *directory.parents)), 'publisher_symlink_refused')
+    hg.need(not restore_barrier.blocked(directory), "restored_initialization_blocked")
     directory.mkdir(mode=0o700)
     value = dict(schema=1, format=FORMAT, chain=chain, invoices={})
     fd = os.open(directory/'state.json', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
@@ -152,7 +154,7 @@ class Publisher:
     def guard(self):
         self.authority.guard()
         hg.need(not self.blocked and self.journal.lock_fd is not None, 'publisher_blocked')
-        hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_publisher_blocked')
+        hg.need(not restore_barrier.blocked(self.journal.directory), 'restored_publisher_blocked')
 
     def commit(self, record):
         self.guard(); validate(record, self.authority)

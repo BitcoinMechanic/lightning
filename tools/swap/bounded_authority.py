@@ -15,6 +15,7 @@ import time
 
 import chain_identity as ci
 import held_gate as hg
+import restore_barrier
 import route_plan as rp
 
 FORMAT = 'swap-bounded-authority-v1'
@@ -198,6 +199,7 @@ def initialize_fixture(directory, chain):
     hg.binding(chain)
     directory = Path(directory)
     hg.need(not any(p.is_symlink() for p in (directory, *directory.parents)), 'authority_symlink_refused')
+    hg.need(not restore_barrier.blocked(directory), "restored_initialization_blocked")
     directory.mkdir(mode=0o700)
     value = dict(schema=1, format=FORMAT, chain=chain, current=dict.fromkeys(KINDS), grants={}, entries={})
     fd = os.open(directory/'state.json', os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -222,7 +224,7 @@ class Authority:
 
     def guard(self):
         hg.need(not self.blocked and self.journal.lock_fd is not None, 'authority_blocked')
-        hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_authority_blocked')
+        hg.need(not restore_barrier.blocked(self.journal.directory), 'restored_authority_blocked')
 
     def commit(self, new):
         self.guard(); validate(new, self.chain)
@@ -302,11 +304,21 @@ class Authority:
         now = int(self.clock())
         g = grant(dict(schema=1, format=FORMAT, chain=self.chain, nonce=secrets.token_hex(32), kind=kind,
                        created_at=now, expires_at=expires_at, channels=copy.deepcopy(approved), limits=copy.deepcopy(bounds)), self.chain)
+        return self.install_grant(g, confirmed=True)
+
+    def install_grant(self, reviewed, *, confirmed=False):
+        hg.need(confirmed is True, 'confirmation_required'); self.guard()
+        g = copy.deepcopy(grant(reviewed, self.chain)); gid = digest(g)
+        if gid in self.record['grants']:
+            hg.need(equal(self.record['grants'][gid]['terms'], g), 'grant_changed')
+            return gid  # Recovery does not unpause, reselect, renew or add budget.
+        self.read_node(admission=True)
+        hg.need(g['created_at'] <= int(self.clock()) < g['expires_at'], 'grant_closed')
         self.prior()
-        for pin in approved: self.channel(pin, admission=True)
+        for pin in g['channels']: self.channel(pin, admission=True)
         hg.need(len(self.record['grants']) < MAX_RECORDS, 'authority_full')
         gid = digest(g); new = copy.deepcopy(self.record)
-        new['grants'][gid] = dict(terms=g, paused=False); new['current'][kind] = gid
+        new['grants'][gid] = dict(terms=g, paused=False); new['current'][g['kind']] = gid
         self.commit(new)
         return gid
 
@@ -463,7 +475,7 @@ class Authority:
 
     def status(self, eid=None):
         # Local cached status contains no hash, invoice, secret, preimage or RPC.
-        restored = os.path.lexists(self.journal.directory/'restored.json')
+        restored = restore_barrier.blocked(self.journal.directory)
         if eid is None:
             return dict(format=FORMAT, regtest_only=True, blocked=self.blocked or restored,
                         grants=len(self.record['grants']), enrollments=len(self.record['entries']))

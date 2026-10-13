@@ -83,7 +83,7 @@ class Driver:
     def wait(self,predicate):self.lab.wait(predicate,self.proc)
 
 
-def scenario(lab,topologies,direction,name):
+def scenario(lab,topologies,direction,name,*,grant_setup=None):
     lab.checkpoint(direction+'-service-'+name)
     ia,oa=('btc','xbt') if direction=='forward' else ('xbt','btc')
     ib,ins,ic=topologies[ia];ob,outs,oc=topologies[oa]
@@ -172,7 +172,8 @@ def scenario(lab,topologies,direction,name):
         for kind,client in [('incoming',incoming),('outgoing',outgoing)]:
             (customer.state_dir(client.node)/'customer-fixture-time').unlink()
             g=c['grants'][kind];worker=local.Worker(lab,dict(client.node,root=customer.state_dir(client.node)))
-            gid=worker.call('create_grant',kind,g['channels'],g['limits'],int(time.time())+86400,confirmed=True)
+            gid=grant_setup(lab,client.node,kind,g['limits']) if grant_setup else worker.call(
+                'create_grant',kind,g['channels'],g['limits'],int(time.time())+86400,confirmed=True)
             fresh=customer.Client(lab,client.node,client.caller,gid)
             fresh.credential=lab.rpc_named(client.node['cli'],customer.remote.CREDENTIAL,dict(grant_id=gid,confirmed=True))
             renewed[kind]=fresh
@@ -189,17 +190,18 @@ def scenario(lab,topologies,direction,name):
         renewed_grants_preserve_history=name=='restart-held')
 
 
-def run(lab):
-    topologies={label:customer.topology(lab,label,profile,grant_amount_msat=10000000)
+def run(lab,*,grant_setup=None,after_stop=None):
+    topologies={label:customer.topology(lab,label,profile,grant_amount_msat=10000000,grant_setup=grant_setup)
                 for label,profile in [('btc',ci.BTC),('xbt',ci.PRIVKEYIO_XBT)]}
     backend,nodes,_=topologies['xbt'];lab.mine(backend,count=41);lab.synced(backend,*nodes)
-    receipts=[scenario(lab,topologies,d,n) for d in ('forward','reverse') for n in ('release','fail','restart-held')]
+    receipts=[scenario(lab,topologies,d,n,grant_setup=grant_setup) for d in ('forward','reverse') for n in ('release','fail','restart-held')]
     for backend,nodes,_ in topologies.values():
         for node in reversed(nodes):lab.stop(node['proc'])
         lab.stop(backend['proc'])
     for direction in ('forward','reverse'):
         d=Driver(lab,lab.root/('service-worker-'+direction))
         require(len(d.action('history')['swaps'])==3,'service_offline_history_failed')
+    if after_stop: after_stop(lab,topologies)
     result=dict(schema=1,fixture='privkeyio-service-0084',scenarios=receipts,regtest_only=True,
         native_https=True,cached_offline_history=True,synthetic_price_snapshots=True,
         live_market_feed=False,startos_actions_registered=False,installer=False)

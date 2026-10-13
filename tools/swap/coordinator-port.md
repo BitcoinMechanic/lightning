@@ -517,3 +517,60 @@ contracts, signed invoices, incoming bindings, attempts and twelve balances.
 The fixture reuses one journal for three swaps per direction and checks renewed
 grants preserve terminal history, plus cached history with coordinators stopped.
 No installer, StartOS action registration or production activation is included.
+
+## 0092 coordinator administration prerequisite
+
+The operator reported the fresh 0090b nodes paid 10,000 XBT sats A to B,
+1,000 B to A, and 1,000 each direction after both services restarted. Funding
+and UI passwords were retained. This is operator-reported node/UI acceptance;
+it does not establish live swap execution, funded StartOS restore or migration
+of legacy channels.
+
+0092 adds local, bounded grant review/confirmation in the isolated migration
+engine sources. Eligible channels are selected automatically; no SCID entry.
+A 120-second review records exact channel funding and limits before confirmation.
+A lost confirmation recovers the same grant; it cannot renew, unpause or enlarge
+it. Saved grants are never reconstructed from missing authority state. Incoming
+liquidity must cover the amount cap; outgoing liquidity also covers the fee cap.
+More than eight eligible channels is refused pending a separate selection UX.
+
+Restored swap journals now observe both their own restored.json and the shared
+swap-restored.json or existing node-restored.json parent markers. Gate hooks
+cannot fall through or disclose a saved preimage after a restore marker appears.
+This is a refusal barrier, not a funded swap recovery or credential-revocation
+solution. A marker on a restored copy does not revoke a still-running original.
+
+All migrated swap execution remains regtest-only. No installer, StartOS grant
+menus, backup enablement or mainnet activation is included. The package backup
+and update guards also recognize coordinator-admin-v1, so introducing the new
+journal cannot bypass the existing coordinator-state refusal. Deadline/on-chain
+protection and coordinator-aware backup/restore must precede live activation.
+
+`coordinator_admin_cli.py --disposable-regtest --network-directory DIR --profile
+PROFILE` takes one finite JSON action on stdin: initialize, review, confirm,
+cancel, pause or status. It requires an already initialized authority journal.
+Only review accepts limits and lifetime (300–86,400 seconds); confirm requires
+its exact saved confirmation ID and explicit true. It never forwards arbitrary
+RPC, chooses endpoints or creates credentials. Customer credential minting is
+still a separate local facade operation after the authority lock is released.
+
+`restore_barrier.fence(ROOT)` durably writes a private shared marker. A future
+restore adapter must call it on stopped restored data before starting daemons.
+This patch does not wire or enable coordinator backup hooks. Missing, malformed
+or inconsistent payment journals are never reconstructed by admin initialization.
+
+## 0092a populated restore-check correction
+
+The operator's 0092 run reached the end of the six funded swap cases, then
+stopped in the final restore assertion. The fixture had fenced journals before
+constructing the publisher. Populated publisher validation calls guarded
+Authority.entry(), so it correctly refused at construction; the earlier empty
+journal test missed that dependency. No production restore check is relaxed.
+
+The fixture now validates stopped journals before writing the restore marker,
+checks all loaded objects refuse execution, then verifies a fresh customer
+facade refuses during startup before any RPC. It counts both populated incoming
+publishers and all four credential journals and preserves exact journal bytes.
+Local regression covers both profiles with published invoices and credentials,
+alongside empty journals and a corrupt-invoice control that must fail before
+fencing. The corrected six-case funded run is still required on the VM.

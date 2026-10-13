@@ -14,6 +14,7 @@ import bounded_authority as ba
 import cross_contract as cc
 import customer_invoice as invoice
 import held_gate as hg
+import restore_barrier
 
 FORMAT = 'swap-cross-worker-v1'
 KINDS = ('outgoing', 'incoming')
@@ -137,6 +138,7 @@ def validate(record):
 def initialize_fixture(directory):
     directory = Path(directory)
     hg.need(not any(p.is_symlink() for p in (directory,*directory.parents)), 'worker_symlink_refused')
+    hg.need(not restore_barrier.blocked(directory), "restored_initialization_blocked")
     directory.mkdir(mode=0o700)
     fd = os.open(directory/'state.json', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd,'w') as stream:
@@ -159,7 +161,7 @@ class Worker:
 
     def guard(self):
         hg.need(not self.blocked and self.journal.lock_fd is not None, 'worker_blocked')
-        hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_worker_blocked')
+        hg.need(not restore_barrier.blocked(self.journal.directory), 'restored_worker_blocked')
 
     def commit(self, cid, swap):
         self.guard(); record = copy.deepcopy(self.record); record['swaps'][cid] = copy.deepcopy(swap); validate(record)
@@ -301,4 +303,4 @@ class Worker:
         elif 'approval' in s: state = 'setting_up'
         else: state = 'ready_for_confirmation'
         return dict(format=FORMAT,direction=s['contract']['direction'],state=state,terminal=terminal,
-            blocked=self.blocked or os.path.lexists(self.journal.directory/'restored.json'),regtest_only=True)
+            blocked=self.blocked or restore_barrier.blocked(self.journal.directory),regtest_only=True)

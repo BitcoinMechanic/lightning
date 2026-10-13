@@ -17,6 +17,7 @@ import tempfile
 import time
 
 import chain_identity as ci
+import restore_barrier
 
 FORMAT = 'swap-held-gate-v1'
 MAX_BYTES = 1048576
@@ -223,6 +224,7 @@ class Journal:
         return json.loads(raw, object_pairs_hook=unique_object)
 
     def write(self, record):
+        need(not restore_barrier.blocked(self.directory), "restored_journal_blocked")
         need(self.lock_fd is not None, 'journal_writer_closed')
         raw = (json.dumps(record, sort_keys=True, separators=(',', ':'))+'\n').encode()
         need(len(raw) <= MAX_BYTES, 'journal_too_large')
@@ -260,6 +262,7 @@ def initialize_fixture(directory, chain):
     """Fresh regtest fixture only. Never called by the plugin or on an old dir."""
     binding(chain)
     directory = Path(directory)
+    need(not restore_barrier.blocked(directory), "restored_gate_blocked")
     directory.mkdir(mode=0o700)
     raw = dict(schema=2, format=FORMAT, chain=chain, quotes={})
     fd = os.open(directory/'state.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -281,6 +284,7 @@ class Gate:
         self.pending = {}
         self.quarantined = set()
         self.blocked = False
+        need(not restore_barrier.blocked(journal.directory), "restored_gate_blocked")
         observe(rpc('getinfo'), chain)
 
     def commit(self, record):
@@ -321,7 +325,7 @@ class Gate:
         return dict(channel=pin, htlc_id=h['id'])
 
     def register(self, quote):
-        need(not self.blocked, 'gate_blocked')
+        need(not self.blocked and not restore_barrier.blocked(self.journal.directory), 'gate_blocked')
         terms(quote, self.chain)
         observe(self.rpc('getinfo'), self.chain, admission=True)
         old = self.record['quotes'].get(quote['payment_hash'])
@@ -353,7 +357,8 @@ class Gate:
                 else dict(result='fail', failure_message='2002'))
 
     def accept(self, params, request_id):
-        if self.blocked:
+        if self.blocked or restore_barrier.blocked(self.journal.directory):
+            self.pending.clear()
             return None
         h = params['htlc']
         payment_hash = h['payment_hash']
@@ -404,12 +409,13 @@ class Gate:
                     binding=copy.deepcopy(entry.get('binding')),
                     cltv_expiry=entry.get('accepted', {}).get('htlc', {}).get('cltv_expiry'),
                     amount_msat=entry['terms']['amount_msat'],
-                    hook_ready=not self.blocked and payment_hash in self.pending,
-                    needs_attention=self.blocked or payment_hash in self.quarantined,
+                    hook_ready=not self.blocked and not restore_barrier.blocked(self.journal.directory) and payment_hash in self.pending,
+                    needs_attention=self.blocked or restore_barrier.blocked(self.journal.directory) or payment_hash in self.quarantined,
                     terminal_is_intent=True)
 
     def resolve(self, payment_hash, original_binding, *, preimage=None):
-        need(not self.blocked and payment_hash not in self.quarantined, 'gate_blocked')
+        need(not self.blocked and not restore_barrier.blocked(self.journal.directory)
+             and payment_hash not in self.quarantined, 'gate_blocked')
         entry = self.record['quotes'][payment_hash]
         need(entry.get('binding') == original_binding and 'accepted' in entry, 'original_binding_required')
         releasing = preimage is not None

@@ -12,6 +12,7 @@ import re
 
 import bounded_authority as ba
 import held_gate as hg
+import restore_barrier
 
 FORMAT = 'swap-remote-authority-v1'
 CALL = 'swap-authority-call'
@@ -65,6 +66,7 @@ def initialize_fixture(directory, chain, *, format_name=FORMAT):
     """Fresh fixture state; never import or renew old credentials."""
     directory = Path(directory); hg.binding(chain)
     hg.need(not any(p.is_symlink() for p in (directory, *directory.parents)), 'remote_symlink_refused')
+    hg.need(not restore_barrier.blocked(directory), "restored_initialization_blocked")
     directory.mkdir(mode=0o700)
     value = dict(schema=1, format=format_name, chain=chain, credentials={})
     fd = os.open(directory/'state.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -106,7 +108,7 @@ class Remote:
     def guard(self):
         self.authority.guard()
         hg.need(not self.blocked and self.journal.lock_fd is not None, 'remote_blocked')
-        hg.need(not os.path.lexists(self.journal.directory/'restored.json'), 'restored_remote_blocked')
+        hg.need(not restore_barrier.blocked(self.journal.directory), 'restored_remote_blocked')
 
     def commit(self, record):
         self.guard(); validate(record, self.authority, format_name=self.format_name)
