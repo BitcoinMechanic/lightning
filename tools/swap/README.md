@@ -1,3 +1,31 @@
+## Packaged migration runtime candidate (0098)
+
+The separate runtime Dockerfiles and `tools/swap/package_runtime.py` export an
+explicit Python import closure from the exact 0097 source checkpoint plus the
+0098 changes. Node images reuse the BTC 0096a and XBT 0094 binaries and native
+CLNrest bytes proven by the retained 0096a receipt. There is no engine rebuild.
+Fixtures, synthetic prices, fault controls and tests are absent from these
+runtime directories. Isolated Python entry points verify the image manifest
+before loading the gate, customer authority, local administration or controller.
+The manifest is a build-integrity check, not a signature or a new trust anchor.
+
+The new fixture tests six bidirectional swaps through the packaged code,
+including controller SIGKILL, graceful node restart, unchanged persistent data
+and replacement between two image-content generations with identical application
+code. It verifies original funding/signing types, identities, native TLS
+certificates, scoped credentials, invoices, payment attempts, HTLCs, history and
+twelve balances. It never requests a channel close, restore or wallet recovery.
+The market reader is substituted only by the external fixture. It is not in the
+runtime image; the bundled service retains its existing Neoxa reader.
+
+This is still isolated regtest packaging. It does not register live StartOS
+swap actions, change the default package Dockerfiles, build an installer,
+prove a StartOS version migration, or authorize reuse of a restored wallet.
+No existing installed wallet or channel is imported. A same-code image-content
+replacement is not evidence for an arbitrary engine or database-schema upgrade.
+Actual funded acceptance requires the 0098 VM runner; local tests alone do not
+establish it. Historical 0096a evidence keeps its original provenance.
+
 # Swap protocol boundary (0066)
 
 Latest addition: **0082** connects the migrated worker through native CLNrest

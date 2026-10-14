@@ -44,8 +44,14 @@ class RestoreTests(unittest.TestCase):
     def test_fence_refuses_symlink_public_directory_and_nonregular_marker(self):
         link=self.root/'link'; link.symlink_to(self.root)
         with self.assertRaises(ValueError): rb.fence(link)
-        public=self.root/'public'; public.mkdir(mode=0o755)
-        with self.assertRaises(ValueError): rb.fence(public)
+        public=self.root/'public'; public.mkdir(mode=0o700)
+        # mkdir's mode is filtered by the caller's umask (0077 in the runner).
+        # Set the deliberately unsafe fixture mode explicitly before testing it.
+        public.chmod(0o755)
+        self.assertEqual(public.stat().st_mode & 0o777, 0o755)
+        with self.assertRaisesRegex(ValueError, '^restore_directory_not_private$'):
+            rb.fence(public)
+        self.assertFalse((public/rb.MARKER).exists())
         os.mkfifo(self.root/rb.MARKER,mode=0o600)
         with self.assertRaises(ValueError): rb.fence(self.root)
 
