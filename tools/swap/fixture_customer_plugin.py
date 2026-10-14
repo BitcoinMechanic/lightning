@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fixture-only reply loss, mutation counts and admission clock."""
 from pathlib import Path
+import json
+import re
 import sys
 import time
 import authority_plugin as base
@@ -12,6 +14,8 @@ class RPC(plugin.RPC):
         super().__init__(configuration); self.root = Path(configuration['lightning-dir'])
 
     def __call__(self, method, **params):
+        if method == 'close':
+            with (self.root/'customer-mutations.log').open('a') as stream: stream.write(method+'\n')
         result = super().__call__(method, **params)
         if method in ('sendpay', 'signinvoice', 'createrune'):
             with (self.root/'customer-mutations.log').open('a') as stream: stream.write(method+'\n')
@@ -28,6 +32,16 @@ class Service(plugin.Service):
             path = root/'customer-fixture-time'
             return int(path.read_text()) if path.is_file() else time.time()
         super().__init__(configuration, profile, rpc_factory, clock)
+
+    def _protect_once(self):
+        try: return super()._protect_once()
+        except Exception as error:
+            reason = str(error)
+            safe = reason if re.fullmatch(r'[a-z]+(?:_[a-z]+)+', reason) else None
+            with (self.root/'watchdog-errors.jsonl').open('a') as stream:
+                stream.write(json.dumps(dict(error_type=type(error).__name__, reason=safe,
+                    rpc_code=getattr(error,'code',None)))+'\n')
+            raise
 
 
 if __name__ == '__main__':

@@ -993,6 +993,8 @@ fail:
  * Data passed to the plugin, and as the context for the hook callback
  */
 struct htlc_accepted_hook_payload {
+	/* Recovery-only replay of an already committed final HTLC. */
+	bool closing_replay;
 	struct route_step *route_step;
 	/* NULL if it couldn't be parsed! */
 	struct onion_payload *payload;
@@ -1313,6 +1315,16 @@ htlc_accepted_hook_final(struct htlc_accepted_hook_payload *request STEALS)
 
 	request->hin->status = tal_free(request->hin->status);
 
+	/* A persisted final HTLC may be replayed solely so an important hook can
+	 * return its original preimage to onchaind.  A continue/forward_to reply
+	 * must not start a new payment or forwarding operation after closing. */
+	if (request->closing_replay) {
+		local_fail_in_htlc(hin,
+				  take(towire_permanent_channel_failure(NULL)));
+		tal_free(request);
+		return;
+	}
+
 	/* Hand the payload to the htlc_in since we'll want to have that info
 	 * handy for the hooks and notifications. */
 	request->hin->payload = tal_steal(request->hin, request->payload);
@@ -1540,7 +1552,11 @@ static bool peer_accepted_htlc(const tal_t *ctx,
 	 *
 	 *   - SHOULD fail to route any HTLC added after it has sent `shutdown`.
 	 */
-	if (!channel_state_can_add_htlc(channel->state)) {
+	if (!channel_state_can_add_htlc(channel->state)
+	    && !(replay && (channel->state == CHANNELD_SHUTTING_DOWN
+			   || channel->state == AWAITING_UNILATERAL
+			   || channel->state == FUNDING_SPEND_SEEN
+			   || channel->state == ONCHAIN))) {
 		*failmsg = towire_permanent_channel_failure(ctx);
 		log_debug(channel->log,
 			  "Rejecting their htlc %"PRIu64
@@ -1586,7 +1602,17 @@ static bool peer_accepted_htlc(const tal_t *ctx,
 		goto fail;
 	}
 
+	/* Never offer an old forwarding HTLC to a hook on a closing channel.
+	 * Only an already committed, unprocessed final HTLC can recover here;
+	 * htlcs_resubmit() selects RCVD_ADD_ACK_REVOCATION from the wallet. */
+	if (!channel_state_can_add_htlc(channel->state)
+	    && rs->nextcase != ONION_END) {
+		*failmsg = towire_permanent_channel_failure(ctx);
+		goto fail;
+	}
+
 	hook_payload = tal(NULL, struct htlc_accepted_hook_payload);
+	hook_payload->closing_replay = replay && !channel_state_can_add_htlc(channel->state);
 
 	hook_payload->route_step = tal_steal(hook_payload, rs);
 	hook_payload->payload = onion_decode(hook_payload,

@@ -19,6 +19,7 @@ import restore_barrier
 import route_plan as rp
 
 FORMAT = 'swap-bounded-authority-v1'
+PROTECTED_FORMAT = 'swap-bounded-authority-v2'
 KINDS = ('incoming', 'outgoing')
 MAX_RECORDS = 64
 METHODS = frozenset(('getinfo', 'decode', 'listpeerchannels', 'listsendpays', 'listhtlcs',
@@ -39,6 +40,8 @@ def equal(a, b):
 def limits(value, kind):
     common = {'max_swaps', 'max_amount_msat', 'total_amount_msat'}
     extra = rp.LIMIT_KEYS if kind == 'outgoing' else {'min_cltv_delta', 'max_cltv_delta'}
+    protected = kind == 'incoming' and type(value) is dict and 'close_before_blocks' in value
+    if protected: extra = extra | {'close_before_blocks'}
     hg.need(kind in KINDS and type(value) is dict and set(value) == common | extra, 'grant_limits_invalid')
     hg.need(hg.integer(value['max_swaps'], 1, 10) and hg.integer(value['max_amount_msat'], 1, 1000010000)
             and hg.integer(value['total_amount_msat'], value['max_amount_msat'], 10000100000), 'grant_limits_invalid')
@@ -47,6 +50,9 @@ def limits(value, kind):
     else:
         hg.need(hg.integer(value['min_cltv_delta'], 1, 2016)
                 and hg.integer(value['max_cltv_delta'], value['min_cltv_delta'], 2016), 'grant_limits_invalid')
+        if protected:
+            hg.need(type(value['close_before_blocks']) is int and value['close_before_blocks'] == 72
+                    and value['min_cltv_delta'] >= 216, 'protection_limits_invalid')
     return value
 
 
@@ -61,7 +67,7 @@ def pins(value, profile):
 def grant(value, chain):
     hg.need(type(value) is dict and set(value) == {'schema', 'format', 'chain', 'nonce', 'kind',
             'created_at', 'expires_at', 'limits', 'channels'}, 'grant_fields_invalid')
-    hg.need(type(value['schema']) is int and value['schema'] == 1 and value['format'] == FORMAT,
+    hg.need(type(value['schema']) is int and value['schema'] == 1 and value['format'] == grant_format(value['limits']),
             'grant_format_refused')
     ci.same_binding(hg.binding(value['chain']), chain)
     hg.need(ci.hex_field(value['nonce'], 64) and value['kind'] in KINDS
@@ -69,6 +75,14 @@ def grant(value, chain):
             and hg.integer(value['expires_at'], value['created_at']+1, value['created_at']+86400), 'grant_terms_invalid')
     limits(value['limits'], value['kind']); pins(value['channels'], chain['profile'])
     return value
+
+
+def grant_format(bounds):
+    return PROTECTED_FORMAT if type(bounds) is dict and 'close_before_blocks' in bounds else FORMAT
+
+
+def protected(g):
+    return g['format'] == PROTECTED_FORMAT and g['kind'] == 'incoming'
 
 
 def payload(value, g):
@@ -167,6 +181,14 @@ def validate(record, chain):
                             and 'htlc' in entry), 'terminal_evidence_invalid')
         else:
             allowed |= {'publication', 'incoming', 'decision', 'htlc'}
+            if 'protection' in entry:
+                import deadline_protection as protection
+                protection.validate_entry(entry, g)
+                allowed.add('protection')
+            if 'closing' in entry:
+                hg.need(entry['closing'] is True and 'protection' in entry and 'terminal' not in entry,
+                        'closing_evidence_invalid')
+                allowed.add('closing')
             if 'publication' in entry:
                 hg.need(entry['publication'] in ('intent', 'registered'), 'publication_invalid')
             if 'incoming' in entry:
@@ -238,15 +260,15 @@ class Authority:
         self.guard()
         return hg.observe(self.rpc('getinfo'), self.chain, admission=admission)
 
-    def channel(self, pin, *, admission=False, debit=0):
+    def channel(self, pin, *, admission=False, debit=0, recovery=False):
         reply = self.rpc('listpeerchannels')
         hg.need(type(reply) is dict and type(reply.get('channels')) is list, 'channels_unavailable')
         found = [r for r in reply['channels'] if r.get('channel_id') == pin['channel_id']]
         hg.need(len(found) == 1 and hg.channel_pin(found[0], self.chain['profile']) == pin, 'approved_channel_changed')
         row = found[0]
-        # Closing/archived channels are not silently treated as settled. The
-        # separate on-chain integration must provide its own recovery evidence.
-        hg.need(row.get('state') == 'CHANNELD_NORMAL' and row.get('lost_state', False) is False
+        hg.need((row.get('state') == 'CHANNELD_NORMAL' or
+                 (recovery and not admission and row.get('state') in hg.CLOSING_STATES))
+                and row.get('lost_state', False) is False
                 and type(row.get('htlcs')) is list, 'channel_requires_recovery')
         if admission:
             hg.need(row.get('peer_connected') is True and row.get('reestablished') is True
@@ -302,7 +324,7 @@ class Authority:
     def create_grant(self, kind, approved, bounds, expires_at, *, confirmed=False):
         hg.need(confirmed is True, 'confirmation_required'); self.read_node(admission=True)
         now = int(self.clock())
-        g = grant(dict(schema=1, format=FORMAT, chain=self.chain, nonce=secrets.token_hex(32), kind=kind,
+        g = grant(dict(schema=1, format=grant_format(bounds), chain=self.chain, nonce=secrets.token_hex(32), kind=kind,
                        created_at=now, expires_at=expires_at, channels=copy.deepcopy(approved), limits=copy.deepcopy(bounds)), self.chain)
         return self.install_grant(g, confirmed=True)
 
@@ -429,7 +451,14 @@ class Authority:
                 incoming_binding(incoming, p)
                 hg.need('incoming' not in e or equal(e['incoming'], incoming), 'incoming_binding_changed')
                 e['incoming'] = incoming
-                b = incoming['binding']; row = self.channel(b['channel'])
+                b = incoming['binding']; row = self.channel(b['channel'],
+                    recovery=ba_protected_entry(e, g))
+                closing = row['state'] != 'CHANNELD_NORMAL'
+                if closing:
+                    hg.need('terminal' not in e, 'terminal_evidence_regressed')
+                    e['closing'] = True
+                else:
+                    hg.need('closing' not in e, 'closing_evidence_regressed')
                 h = self.history(b['channel'], p, 'in', p['amount_msat'])
                 hg.need(h is not None and h[0]['id'] == b['htlc_id'] and h[0]['expiry'] == incoming['expiry'],
                         'original_incoming_htlc_missing')
@@ -444,7 +473,7 @@ class Authority:
                 else:
                     action = 'release' if phase == 'release_intent' else 'fail'
                     hg.need(e.get('decision', {}).get('action') == action, 'unowned_gate_decision')
-                    terminal = h[1] == 'SENT_REMOVE_ACK_REVOCATION' and row['htlcs'] == []
+                    terminal = not closing and h[1] == 'SENT_REMOVE_ACK_REVOCATION' and row['htlcs'] == []
                     hg.need('terminal' not in e or terminal, 'terminal_evidence_regressed')
                     if terminal: e['terminal'] = 'released' if action == 'release' else 'failed'
         if not equal(e, self.record['entries'][eid]): self.update(eid, e)
@@ -481,8 +510,18 @@ class Authority:
                         grants=len(self.record['grants']), enrollments=len(self.record['entries']))
         hg.need(type(eid) is str and eid in self.record['entries'], 'unknown_enrollment')
         e = self.record['entries'][eid]; kind = self.record['grants'][e['grant_id']]['terms']['kind']
-        state = e.get('terminal') or (e.get('attempt', {}).get('state', 'send_uncertain') if 'send' in e
-                else 'resolution_intent' if 'decision' in e else 'held' if 'incoming' in e
-                else 'waiting_for_payment' if e.get('publication') == 'registered' else 'enrolled')
+        state = entry_state(e)
         return dict(kind=kind, state=state, terminal='terminal' in e, regtest_only=True,
                     blocked=self.blocked or restored)
+
+
+def ba_protected_entry(e, g):
+    return protected(g) and 'protection' in e
+
+
+def entry_state(e):
+    return e.get('terminal') or ('onchain_recovery' if e.get('closing') else
+        'close_outcome_pending' if e.get('protection', {}).get('close') else
+        e.get('attempt', {}).get('state', 'send_uncertain') if 'send' in e
+        else 'resolution_intent' if 'decision' in e else 'held' if 'incoming' in e
+        else 'waiting_for_payment' if e.get('publication') == 'registered' else 'enrolled')

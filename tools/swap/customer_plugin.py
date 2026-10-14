@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import time
+import threading
 
 import authority_plugin as plugin
 import bounded_authority as ba
@@ -28,9 +29,40 @@ class RPC(plugin.RPC):
 
 class Service(plugin.Service):
     def __init__(self, configuration, profile, rpc_factory=RPC, clock=time.time):
+        self.serial = threading.RLock()
         super().__init__(configuration, profile, rpc_factory, clock)
 
+    def protect_once(self):
+        with self.serial: self._protect_once()
+
+    def _protect_once(self):
+        import deadline_protection as protection
+        # Same nonblocking journal lock as RPC. A busy lock is retried by the
+        # next tick; no cached authority survives a request or node restart.
+        journal = hg.Journal(self.root/plugin.AUTHORITY_DIR)
+        try:
+            a = ba.Authority(journal, self.chain, self.rpc, self.clock)
+            a.guard()
+            for eid, e in list(a.record['entries'].items()):
+                if 'protection' in e and 'terminal' not in e:
+                    protection.protect(a, eid)
+        finally: journal.close()
+
+    def start_watchdog(self):
+        def run():
+            while True:
+                try: self.protect_once()
+                except Exception:
+                    # Retry observations, never a saved close/send dispatch.
+                    # Remote evidence retains ambiguity; no secret is logged.
+                    pass
+                time.sleep(1)
+        threading.Thread(target=run, name='swap-deadline-watchdog', daemon=True).start()
+
     def invoke(self, method, params, profile=None):
+        with self.serial: return self._invoke(method, params, profile)
+
+    def _invoke(self, method, params, profile=None):
         journals = []
         try:
             for name in (plugin.AUTHORITY_DIR, REMOTE_DIR, INVOICE_DIR):

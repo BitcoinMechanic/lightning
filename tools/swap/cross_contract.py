@@ -135,7 +135,8 @@ def held_margin(c, evidence, *, incoming_height):
     ba.validate(dict(schema=1, format=ba.FORMAT, chain=g['chain'], current=dict(incoming=gid, outgoing=None),
         grants={gid:dict(terms=g, paused=False)}, entries={eid:e}), g['chain'])
     hg.need(ba.equal(e['payload'], quote) and e['grant_id'] == gid and 'incoming' in e
-            and 'decision' not in e and 'terminal' not in e and evidence['status'] ==
+            and 'decision' not in e and 'terminal' not in e and 'closing' not in e
+            and 'close' not in e.get('protection', {}) and evidence['status'] ==
                 dict(kind='incoming', state='held', terminal=False, regtest_only=True, blocked=False),
             'contract_incoming_not_held')
     hg.need(hg.integer(incoming_height, 0, 2**32-1) and quote['min_cltv_delta'] <=

@@ -24,6 +24,7 @@ MAX_BYTES = 1048576
 MAX_QUOTES = 64
 PIN_KEYS = {'channel_id', 'short_channel_id', 'funding_txid', 'funding_outnum',
             'peer_id', 'channel_type_bits'}
+CLOSING_STATES = ('CHANNELD_SHUTTING_DOWN', 'AWAITING_UNILATERAL', 'FUNDING_SPEND_SEEN', 'ONCHAIN')
 
 
 class Refused(ValueError):
@@ -311,7 +312,8 @@ class Gate:
         need(len(rows) == 1, 'incoming_channel_unavailable')
         row = rows[0]
         pin = channel_pin(row, self.chain['profile'])
-        need(pin in quote['approved_channels'] and row.get('state') == 'CHANNELD_NORMAL'
+        need(pin in quote['approved_channels'] and (row.get('state') == 'CHANNELD_NORMAL'
+             or (not admission and row.get('state') in CLOSING_STATES))
              and row.get('lost_state', False) is False, 'incoming_channel_changed')
         if admission:
             need(row.get('peer_connected') is True and row.get('reestablished') is True, 'channel_not_ready')

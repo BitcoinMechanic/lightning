@@ -1,0 +1,35 @@
+--- a/lightningd/peer_htlcs.c
++++ b/lightningd/peer_htlcs.c
+@@ -995,0 +996,2 @@
++	/* Recovery-only replay of an already committed final HTLC. */
++	bool closing_replay;
+@@ -1315,0 +1318,10 @@
++	/* A persisted final HTLC may be replayed solely so an important hook can
++	 * return its original preimage to onchaind.  A continue/forward_to reply
++	 * must not start a new payment or forwarding operation after closing. */
++	if (request->closing_replay) {
++		local_fail_in_htlc(hin,
++				  take(towire_permanent_channel_failure(NULL)));
++		tal_free(request);
++		return;
++	}
++
+@@ -1543 +1555,5 @@
+-	if (!channel_state_can_add_htlc(channel->state)) {
++	if (!channel_state_can_add_htlc(channel->state)
++	    && !(replay && (channel->state == CHANNELD_SHUTTING_DOWN
++			   || channel->state == AWAITING_UNILATERAL
++			   || channel->state == FUNDING_SPEND_SEEN
++			   || channel->state == ONCHAIN))) {
+@@ -1588,0 +1605,9 @@
++	/* Never offer an old forwarding HTLC to a hook on a closing channel.
++	 * Only an already committed, unprocessed final HTLC can recover here;
++	 * htlcs_resubmit() selects RCVD_ADD_ACK_REVOCATION from the wallet. */
++	if (!channel_state_can_add_htlc(channel->state)
++	    && rs->nextcase != ONION_END) {
++		*failmsg = towire_permanent_channel_failure(ctx);
++		goto fail;
++	}
++
+@@ -1589,0 +1615 @@
++	hook_payload->closing_replay = replay && !channel_state_can_add_htlc(channel->state);

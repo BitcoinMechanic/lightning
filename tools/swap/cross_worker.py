@@ -33,9 +33,7 @@ def evidence(c, kind, value):
         current={k:gid if k == kind else None for k in ba.KINDS},
         grants={gid:dict(terms=g, paused=False)}, entries={eid:e}), g['chain'])
     hg.need(e['grant_id'] == gid and ba.equal(e['payload'], c[kind]), 'worker_enrollment_changed')
-    state = e.get('terminal') or (e.get('attempt', {}).get('state', 'send_uncertain') if 'send' in e
-        else 'resolution_intent' if 'decision' in e else 'held' if 'incoming' in e
-        else 'waiting_for_payment' if e.get('publication') == 'registered' else 'enrolled')
+    state = ba.entry_state(e)
     hg.need(ba.equal(value['status'], dict(kind=kind, state=state, terminal='terminal' in e,
             regtest_only=True, blocked=False)), 'worker_evidence_status_invalid')
     return e
@@ -49,6 +47,8 @@ def monotonic(old, new):
         elif key == 'attempt':
             hg.need(ba.equal(value['identity'], new[key]['identity'])
                     and (value['state'] == 'pending' or ba.equal(value, new[key])), 'worker_attempt_changed')
+        elif key == 'protection':
+            monotonic(value, new[key])
         else:
             hg.need(ba.equal(value, new[key]), 'worker_evidence_changed')
 
@@ -110,6 +110,8 @@ def validate(record):
                     and set(send) == {'at','incoming','outgoing','observations'}, 'worker_send_invalid')
             enrolled_admission(c, send['observations'], send['at'])
             cc.held_margin(c, send['incoming'], incoming_height=send['observations']['incoming']['blockheight'])
+            if ba.protected(c['grants']['incoming']):
+                hg.need('protection' in send['incoming']['entry'], 'worker_send_without_protection')
             out = evidence(c, 'outgoing', send['outgoing'])
             hg.need(set(out) == {'grant_id','payload'}, 'worker_send_not_fresh')
             hg.need('incoming' in s['remote'] and 'outgoing' in s['remote'], 'worker_send_evidence_missing')
@@ -251,6 +253,10 @@ class Worker:
             value = self.rpc(s,'incoming','invoice',dict(entry_id=enrollment(c,'incoming')))
             publication(c,value); s['invoice'] = copy.deepcopy(value); self.commit(cid,s)
             return self.status(cid)
+        if 'send' in s and ba.protected(c['grants']['incoming']):
+            # Protect before contacting the outgoing node. Its transport may
+            # be down while the independently timed incoming HTLC expires.
+            self.rpc(s,'incoming','protect',dict(entry_id=enrollment(c,'incoming')))
         s = self.observe(cid); inc = s['remote']['incoming']['entry']; out = s['remote']['outgoing']['entry']
         if 'decision' in s:
             if 'terminal' not in inc:
@@ -270,6 +276,9 @@ class Worker:
                 reports = self.inspections(s,enrolled=True); now = int(self.clock())
                 enrolled_admission(c,reports,now)
                 cc.held_margin(c,s['remote']['incoming'],incoming_height=reports['incoming']['blockheight'])
+                if ba.protected(c['grants']['incoming']) and 'protection' not in inc:
+                    self.rpc(s,'incoming','arm',dict(entry_id=enrollment(c,'incoming')))
+                    return self.status(cid)  # Fresh observations before the sole send.
                 s['send'] = dict(at=now,incoming=copy.deepcopy(s['remote']['incoming']),
                     outgoing=copy.deepcopy(s['remote']['outgoing']),observations=reports)
                 self.commit(cid,s)
@@ -295,6 +304,8 @@ class Worker:
         if inc.get('terminal') == 'released' and out.get('terminal') == 'complete': state,terminal = 'settled',True
         elif inc.get('terminal') == 'failed' and out.get('terminal') in ('failed','retired'): state,terminal = 'failed',True
         elif inc.get('terminal') == 'expired' and out.get('terminal') == 'retired': state,terminal = 'expired',True
+        elif inc.get('closing'): state = 'onchain_recovery'
+        elif inc.get('protection', {}).get('close'): state = 'close_outcome_pending'
         elif 'decision' in s: state = 'resolving'
         elif 'send' in s: state = 'outgoing_'+out.get('attempt',{}).get('state','uncertain')
         elif inc.get('terminal') == 'expired': state = 'waiting_for_retirement'

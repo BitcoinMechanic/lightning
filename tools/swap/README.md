@@ -325,3 +325,37 @@ reject any core hook-continuation or invoice-resolution trace after SIGKILL.
 The non-important control verifies the exact sender preimage. A small diagnostic
 record captures HTLC state and preimage presence before an assertion can fail.
 No payment, gate, core or service configuration is changed by this correction.
+
+## 0094 deadline protection candidate
+
+The separate regtest coordinator supports explicitly reviewed incoming grants
+with `close_before_blocks: 72` and format `swap-bounded-authority-v2`. Existing
+grants and credentials retain their previous authority. Before its single send,
+the worker arms the exact committed incoming HTLC and rechecks the contract's
+remaining-block margin. The node's customer facade watches armed enrollments
+locally, including while the controller or outgoing coordinator is unavailable.
+It records the exact close intent before dispatching `close` once. A lost reply
+or crash between intent and dispatch never authorizes a second close or payment.
+Admission expiry and pause do not stop enrolled recovery; restore markers do.
+
+A narrow engine patch allows an already committed final HTLC to reach its held
+gate after a closing-channel restart. New arrivals and replayed forwarding HTLCs
+remain refused there; a recovery hook that continues cannot invoke a core invoice.
+The original important-plugin shutdown/crash fix and the XBT package’s 0088b
+recovery fee-weight patch are retained in the new build. A saved preimage
+uses the core's existing persisted fulfillment and onchaind claim path.
+
+The scoped `chain` operation checks fresh funding-spend, HTLC witness, expiry,
+CSV sweep and wallet observations. It does not cache success. Confirmations and
+wallet ownership are supplied by the paired CLN; the funded fixture separately
+checks confirmed backend blocks and reconciles every satoshi. A close/release
+reply is never settlement proof. On-chain cases remain `onchain_recovery`,
+nonterminal and unavailable for grant renewal or another swap in that journal.
+Automatic retirement of closed-channel history is a separate later change.
+
+The 0094 runner requires original-binary replay controls, six patched funded
+cases in both directions (claim, timeout, closing restart), and the prior six
+service cases on the new engines. Local unit checks are not funded acceptance.
+The existing 0093 evidence keeps its original provenance. This is a source/test
+candidate only: no installer, production activation, coordinator backup support,
+legacy-channel migration, multipart payments or automatic payment retries.

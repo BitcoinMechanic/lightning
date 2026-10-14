@@ -96,7 +96,9 @@ def main(rpc_factory=RPC, service_factory=Service, manifest_factory=manifest):
             hg.need(service is None, 'already_initialized')
             p = request['params']
             service = service_factory(p['configuration'], p['options']['swap-authority-profile'], rpc_factory)
-            gp.emit(gp.response(request['id'], {})); continue
+            gp.emit(gp.response(request['id'], {}))
+            if hasattr(service, 'start_watchdog'): service.start_watchdog()
+            continue
         hg.need(service is not None, 'authority_not_initialized')
         try:
             result = service.invoke(method, request.get('params', {}))

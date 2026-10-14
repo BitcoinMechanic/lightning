@@ -96,7 +96,7 @@ class Admin:
         hg.need(len(self.record['reviews']) < ba.MAX_RECORDS, 'admin_history_full')
         required = limits['max_amount_msat'] + limits.get('max_fee_msat', 0)
         pins = self.channels(kind, required); now = int(self.clock())
-        g = ba.grant(dict(schema=1, format=ba.FORMAT, chain=self.authority.chain,
+        g = ba.grant(dict(schema=1, format=ba.grant_format(limits), chain=self.authority.chain,
             nonce=secrets.token_hex(32), kind=kind, created_at=now, expires_at=now+lifetime_seconds,
             limits=copy.deepcopy(limits), channels=pins), self.authority.chain)
         gid = ba.digest(g); r = copy.deepcopy(self.record)
@@ -107,12 +107,17 @@ class Admin:
         hg.need(type(gid) is str and gid in self.record['reviews'], 'admin_unknown_review')
         item = self.record['reviews'][gid]; g = item['grant']
         saved = self.authority.record['grants'].get(gid)
-        return dict(confirmation=gid, kind=g['kind'], phase=item['phase'],
+        result = dict(confirmation=gid, kind=g['kind'], phase=item['phase'],
             profile=g['chain']['profile'], channel_count=len(g['channels']),
             limits=copy.deepcopy(g['limits']), expires_at=g['expires_at'],
             confirm_before=min(g['created_at']+REVIEW_SECONDS, g['expires_at']),
             current=self.authority.record['current'][g['kind']] == gid,
             paused=None if saved is None else saved['paused'], regtest_only=True)
+        if ba.protected(g):
+            result['protection'] = dict(close_before_blocks=g['limits']['close_before_blocks'],
+                scope='The actual incoming channel may be force-closed, including its other payments.',
+                close_dispatches_per_enrollment=1)
+        return result
 
     def confirm(self, confirmation, confirmed):
         self.guard(); hg.need(confirmed is True, 'confirmation_required')

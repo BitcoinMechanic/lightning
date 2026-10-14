@@ -17,7 +17,11 @@ CALL = 'swap-customer-call'
 CREDENTIAL = 'swap-customer-credential'
 OPERATIONS = {kind: ops+('inspect',)+(('invoice',) if kind == 'incoming' else ('plan',))
               for kind, ops in base.OPERATIONS.items()}
-METHODS = ba.METHODS | base.SETUP_METHODS | {'signinvoice', 'getroutes', 'listfunds'}
+METHODS = ba.METHODS | base.SETUP_METHODS | {'signinvoice', 'getroutes', 'listfunds', 'close', 'listtransactions'}
+
+
+def operations(grant):
+    return OPERATIONS[grant['kind']] + (('arm', 'protect', 'chain') if ba.protected(grant) else ())
 
 
 def initialize_fixture(directory, chain):
@@ -47,15 +51,26 @@ class Remote(base.Remote):
     def guard(self):
         super().guard(); self.publisher.guard()
 
+    def restrictions(self, gid, kind):
+        g = self.authority.record['grants'][gid]['terms']
+        hg.need(kind == g['kind'], 'credential_scope_invalid')
+        return base.restrictions(gid, kind, operations={kind:operations(g)}, method=self.method)
+
     def call(self, params):
         self.guard()
         hg.need(type(params) is dict and set(params) == {'grant_id', 'operation', 'body'}, 'remote_parameters_invalid')
-        if params['operation'] not in ('plan', 'inspect', 'invoice'):
+        if params['operation'] not in ('plan', 'inspect', 'invoice', 'arm', 'protect', 'chain'):
             return super().call(params)
         gid, op, body = (params[k] for k in ('grant_id', 'operation', 'body'))
         info = super().call(dict(grant_id=gid, operation='info', body={}))
         g = info['grant']; a = self.authority
-        hg.need(op in self.operations[g['kind']] and type(body) is dict, 'remote_operation_refused')
+        hg.need(op in operations(g) and type(body) is dict, 'remote_operation_refused')
+        if op in ('arm', 'protect', 'chain'):
+            import deadline_protection as protection
+            hg.need(set(body) == {'entry_id'}, 'remote_parameters_invalid')
+            e, _ = a.entry(body['entry_id'], 'incoming')
+            hg.need(e['grant_id'] == gid, 'enrollment_outside_grant')
+            return {'arm':protection.arm, 'protect':protection.protect, 'chain':protection.inspect}[op](a, body['entry_id'])
         if op == 'plan':
             hg.need(set(body) == {'invoice'}, 'remote_parameters_invalid')
             a.active(gid)

@@ -75,8 +75,9 @@ def info(value, grant):
     return value
 
 
-def parameters(kind, op, body):
-    hg.need(type(op) is str and op in remote.OPERATIONS[kind] and type(body) is dict, 'https_operation_refused')
+def parameters(kind, op, body, grant=None):
+    allowed = remote.operations(grant) if grant is not None else remote.OPERATIONS[kind]
+    hg.need(type(op) is str and op in allowed and type(body) is dict, 'https_operation_refused')
     if op == 'inspect':
         fields = [{'entry_id'}, {'amount_msat'} if kind == 'incoming' else set()]
     else:
@@ -124,7 +125,7 @@ class Client:
 
     def call(self, op, body=None):
         body = {} if body is None else copy.deepcopy(body)
-        parameters(self.grant['kind'],op,body)
+        parameters(self.grant['kind'],op,body,self.grant)
         if op == 'enroll':
             ba.payload(body['data'],self.grant)
             hg.need(body['confirmation'] == ba.digest(body['data']), 'exact_confirmation_required')
