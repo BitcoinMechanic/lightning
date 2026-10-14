@@ -149,6 +149,16 @@ class Admin:
         self.authority.pause(grant_id)
         return dict(paused=True, recovery_preserved=True)
 
+    def recovery_review(self, entry_id):
+        self.guard()
+        import onchain_retirement as retirement
+        return retirement.review(self.authority, entry_id)
+
+    def recovery_confirm(self, entry_id, confirmation, confirmed):
+        self.guard()
+        import onchain_retirement as retirement
+        return retirement.confirm(self.authority, entry_id, confirmation, confirmed=confirmed)
+
     def status(self):
         return dict(read_only=True, regtest_only=True,
             blocked=self.blocked or restore_barrier.blocked(self.journal.directory)
@@ -163,7 +173,9 @@ def execute(root, chain, rpc, request, *, clock=time.time):
     action = request['action']
     fields = {'initialize':{'confirmed'}, 'review':{'kind','limits','lifetime_seconds'},
               'confirm':{'confirmation','confirmed'}, 'cancel':{'confirmation'},
-              'pause':{'grant_id','confirmed'}, 'status':set()}
+              'pause':{'grant_id','confirmed'}, 'status':set(),
+              'recovery_review':{'entry_id'},
+              'recovery_confirm':{'entry_id','confirmation','confirmed'}}
     hg.need(action in fields and set(request) == {'action'} | fields[action], 'admin_request_invalid')
     # Same lock order as every facade: authority first. No RPC into the facade
     # while holding its journal; credential minting remains its separate action.

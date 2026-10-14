@@ -30,7 +30,7 @@ import test_https_engine as transport
 import test_route_engine as routes
 from test_engine import require
 
-VERSIONS={ci.BTC:('v26.06.9-swap0094',),ci.PRIVKEYIO_XBT:('v26.06.9-blake2b.7-swap0094',)}
+VERSIONS={ci.BTC:('v26.06.9-swap0096a',),ci.PRIVKEYIO_XBT:('v26.06.9-blake2b.7-swap0094',)}
 
 
 class Lab(transport.HttpsLab):
@@ -207,7 +207,7 @@ def start_worker(lab,direction,name,clients,contract):
     return driver
 
 
-def scenario(lab,direction,name):
+def scenario(lab,direction,name,*,after_recovery=None):
     prefix=direction+'-'+name
     topologies={asset:customer.topology(lab,prefix+'-'+asset,profile,grant_amount_msat=50000000,grant_setup=grant_setup)
                 for asset,profile in [('btc',ci.BTC),('xbt',ci.PRIVKEYIO_XBT)]}
@@ -303,6 +303,7 @@ def scenario(lab,direction,name):
     accounting=reconcile_chain(lab,ib,ins[-2:],pin,before_wallet,start,proof['proof'])
     require(incoming.mutations().count('close')==1 and outgoing.mutations().count('sendpay')==1,'deadline_duplicate_mutation')
     require(lab.rpc_named(ins[-1]['cli'],'listinvoices',dict(payment_hash=ph))['invoices']==[], 'deadline_core_invoice_created')
+    if after_recovery is not None: after_recovery(lab,direction,name,topologies,driver,proof)
     for b,nodes,_ in topologies.values():
         for n in reversed(nodes):lab.stop(n['proc'])
         lab.stop(b['proc'])

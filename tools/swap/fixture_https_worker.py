@@ -39,6 +39,13 @@ def execute(request):
         cid = request['contract_id']
         if action == 'confirm':return worker.confirm(cid,request['confirmation'])
         if action == 'step':return worker.step(cid)
+        if action == 'recovery_review':return worker.recovery_review(cid)
+        if action == 'recovery_confirm':
+            result = worker.recovery_confirm(cid,request['confirmation'],request['confirmed'])
+            if fault == dict(kind='local',operation='retirement'):
+                (directory/'fault-consumed').write_text('local retirement\n')
+                os.kill(os.getpid(),signal.SIGKILL)
+            return result
         if action == 'invoice':return worker.payment_invoice(cid)
         if action == 'status':return worker.status(cid)
         raise ValueError('fixture_worker_action_refused')

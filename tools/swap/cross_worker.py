@@ -78,7 +78,7 @@ def validate(record):
     hashes = set()
     for cid, s in record['swaps'].items():
         hg.need(type(s) is dict and {'contract', 'enroll', 'remote'} <= set(s)
-            and set(s) <= {'contract','enroll','remote','approval','publish','invoice','send','decision','retire'},
+            and set(s) <= {'contract','enroll','remote','approval','publish','invoice','send','decision','retire','recovery_retirement'},
             'worker_record_invalid')
         c = cc.validate(s['contract']); hg.need(cid == cc.digest(c), 'worker_contract_changed')
         ph = c['outgoing']['payment_hash']; hg.need(ph not in hashes, 'worker_hash_reused'); hashes.add(ph)
@@ -132,9 +132,34 @@ def validate(record):
             else:
                 hg.need(d['reason'] in ('cancelled','admission_expired') and 'send' not in s
                         and 'send' not in out and resolution == dict(action='fail'), 'worker_unsafe_cancellation')
+        if 'recovery_retirement' in s:
+            validate_retirement(cid,s)
         if 'retire' in s:
             hg.need(s['retire'] is True and 'send' not in s, 'worker_retirement_invalid')
     return record
+
+
+def recovery_binding(cid, s):
+    c = s['contract']; inc = s['remote'].get('incoming',{}).get('entry',{})
+    out = s['remote'].get('outgoing',{}).get('entry',{})
+    hg.need('send' in s and 'onchain_retirement' in inc and 'attempt' in out and 'htlc' in out,
+            'worker_recovery_not_ready')
+    outcome = out.get('terminal')
+    hg.need((outcome == 'complete' and inc.get('terminal') == 'onchain_claimed'
+             and ba.equal(inc.get('decision'),dict(action='release',preimage=out['attempt'].get('preimage'))))
+            or (outcome == 'failed' and inc.get('terminal') == 'onchain_timed_out'
+                and inc.get('decision') == dict(action='fail')), 'worker_recovery_outcome_mismatch')
+    return dict(contract_id=cid,incoming_retirement=ba.digest(inc['onchain_retirement']),
+        incoming_entry=enrollment(c,'incoming'),outgoing_entry=enrollment(c,'outgoing'),
+        outgoing_attempt=copy.deepcopy(out['attempt']),outgoing_htlc=copy.deepcopy(out['htlc']),outcome=outcome)
+
+
+def validate_retirement(cid,s):
+    r = s['recovery_retirement']
+    hg.need(type(r) is dict and set(r) == {'evidence','confirmation','confirmed_at'}
+            and ba.equal(r['evidence'],recovery_binding(cid,s))
+            and r['confirmation'] == ba.digest(r['evidence'])
+            and hg.integer(r['confirmed_at'],s['send']['at'],2**35-1), 'worker_retirement_changed')
 
 
 def initialize_fixture(directory):
@@ -188,6 +213,8 @@ class Worker:
     def prepare(self, contract):
         self.guard(); c = copy.deepcopy(cc.validate(contract)); cid = cc.digest(c)
         if cid in self.record['swaps']: return cid
+        for old in list(self.record['swaps']):
+            if 'recovery_retirement' in self.record['swaps'][old]: self.check_recovery(old)
         hg.need(all(self.status(k)['terminal'] for k in self.record['swaps']), 'worker_previous_swap_requires_recovery')
         s = dict(contract=c,enroll={},remote={})
         cc.admission(c,self.inspections(s),now=int(self.clock()))
@@ -227,8 +254,32 @@ class Worker:
         else: hg.need(s['decision']['reason'] == 'cancelled', 'worker_resolution_changed')
         return self.status(cid)
 
+    def recovery_review(self, cid):
+        s = self.observe(cid); value = recovery_binding(cid,s)
+        return dict(confirmation=ba.digest(value),contract_id=cid,direction=s['contract']['direction'],
+            outcome=value['outcome'],original_attempt_verified=True,
+            incoming_retirement_verified=True,confirmed='recovery_retirement' in s,
+            read_only=True,regtest_only=True)
+
+    def recovery_confirm(self, cid, confirmation, confirmed=False):
+        self.guard(); hg.need(confirmed is True,'confirmation_required')
+        report = self.recovery_review(cid)
+        hg.need(type(confirmation) is str and confirmation == report['confirmation'], 'exact_confirmation_required')
+        s = self.swap(cid)
+        if 'recovery_retirement' not in s:
+            s['recovery_retirement'] = dict(evidence=recovery_binding(cid,s),confirmation=confirmation,
+                confirmed_at=int(self.clock()))
+            self.commit(cid,s)
+        return self.status(cid)
+
+    def check_recovery(self, cid):
+        s = self.observe(cid); hg.need('recovery_retirement' in s,'worker_recovery_not_ready')
+        validate_retirement(cid,s)
+        return self.status(cid)
+
     def step(self, cid):
         s = self.swap(cid); c = s['contract']
+        if 'recovery_retirement' in s: return self.check_recovery(cid)
         if 'approval' not in s: return self.status(cid)
         for kind in KINDS:
             if s['enroll'].get(kind) != 'done':
@@ -301,7 +352,10 @@ class Worker:
         s = self.record['swaps'][cid]; remote = s['remote']
         inc = remote.get('incoming',{}).get('entry',{}); out = remote.get('outgoing',{}).get('entry',{})
         terminal = False
-        if inc.get('terminal') == 'released' and out.get('terminal') == 'complete': state,terminal = 'settled',True
+        if 'recovery_retirement' in s:
+            state,terminal = ('onchain_settled' if out['terminal'] == 'complete' else 'onchain_failed'),True
+        elif 'onchain_retirement' in inc: state = 'onchain_retirement_review'
+        elif inc.get('terminal') == 'released' and out.get('terminal') == 'complete': state,terminal = 'settled',True
         elif inc.get('terminal') == 'failed' and out.get('terminal') in ('failed','retired'): state,terminal = 'failed',True
         elif inc.get('terminal') == 'expired' and out.get('terminal') == 'retired': state,terminal = 'expired',True
         elif inc.get('closing'): state = 'onchain_recovery'

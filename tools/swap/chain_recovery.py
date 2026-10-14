@@ -71,7 +71,7 @@ def csv_delay(script):
 def p2wsh(script,witness):return script==b'\x00\x20'+sha(witness)
 
 
-def prove(spec,rows,funds,height):
+def prove(spec,rows,funds,height,*,allow_spent=False):
     """No fixture-provided transaction IDs; discover descendants of funding."""
     require(type(height) is int and height>0 and type(rows) is list and len(rows)<=10000 and type(funds) is list,'invalid_chain_evidence')
     confirmed={}
@@ -120,11 +120,13 @@ def prove(spec,rows,funds,height):
                 require(tx['height']-success['height']>=delay,'premature_csv_sweep')
                 owned=[]
                 for f in funds:
-                    if f.get('txid')!=tx['txid'] or f.get('status')!='confirmed':continue
+                    if f.get('txid')!=tx['txid'] or f.get('status') not in (('confirmed','spent') if allow_spent else ('confirmed',)):continue
                     index=f.get('output');require(type(index) is int and 0<=index<len(tx['outputs']),'invalid_wallet_outpoint')
                     o=tx['outputs'][index]
                     require(type(f.get('amount_msat')) is int and f['amount_msat']==o['amount_msat'] and
-                            f.get('scriptpubkey')==o['script'].hex() and f.get('blockheight')==tx['height'],'wallet_output_mismatch')
+                            f.get('scriptpubkey')==o['script'].hex() and
+                            (f.get('blockheight')==tx['height'] or (allow_spent and f.get('status')=='spent'
+                             and 'blockheight' not in f)), 'wallet_output_mismatch')
                     require(index not in owned,'duplicate_wallet_output');owned.append(index)
                 # A wallet fee input may be aggregated into this spend. Require
                 # every value-bearing output to return to the wallet, rather

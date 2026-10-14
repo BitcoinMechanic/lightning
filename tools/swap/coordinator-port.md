@@ -600,7 +600,7 @@ wallet ownership are supplied by the paired CLN; the funded fixture separately
 checks confirmed backend blocks and reconciles every satoshi. A close/release
 reply is never settlement proof. On-chain cases remain `onchain_recovery`,
 nonterminal and unavailable for grant renewal or another swap in that journal.
-Automatic retirement of closed-channel history is a separate later change.
+0096 adds the separate, explicitly reviewed retirement flow described below.
 
 The 0094 runner requires original-binary replay controls, six patched funded
 cases in both directions (claim, timeout, closing restart), and the prior six
@@ -608,3 +608,48 @@ service cases on the new engines. Local unit checks are not funded acceptance.
 The existing 0093 evidence keeps its original provenance. This is a source/test
 candidate only: no installer, production activation, coordinator backup support,
 legacy-channel migration, multipart payments or automatic payment retries.
+
+
+### Reviewed on-chain retirement (0096 migration)
+
+After a protected incoming channel closes, recovery stays nonterminal until an
+operator explicitly retires it. `coordinator_admin_cli.py` now accepts local
+`recovery_review` (`entry_id`) and `recovery_confirm` (`entry_id`, the returned
+`confirmation`, `confirmed: true`). Review does not write authority. Confirmation
+freshly checks the synced node, absence of the original active channel, the exact
+closed funding/peer/signing type, and raw claim-plus-wallet-sweep or timeout
+transactions. The resolving proof must have at least 100 confirmations. A close
+reply, a status string, and a preimage alone cannot retire an entry.
+
+CLN prunes closed HTLC rows on restart. The previously persisted HTLC identity,
+actual incoming binding, decision and close intent remain mandatory; missing
+rows never permit rebinding. Spent wallet sweep outputs can still establish
+historical ownership via `listfunds(spent=true)` and the freshly confirmed raw
+transaction. Confirmation heights and wallet ownership remain authenticated CLN
+observations, not independent chain proofs. The funded fixture also reconciles
+transactions against its separate regtest backend.
+
+Local retirement does not finish the cross-chain swap. The controller's
+`recovery_review` (`cid`) and `recovery_confirm` (`cid`, `confirmation`,
+`confirmed: true`) independently reread both original scoped enrollments. Only
+the exact terminal outgoing attempt, paired with the corresponding reviewed
+incoming claim or timeout, permits `onchain_settled` or `onchain_failed`. These
+are local CLI actions for this migration milestone. No remote rune gains a new
+operation. Existing credentials keep their previous scope.
+
+Retirement appends evidence; it does not delete history, refund grant slots,
+change the original route/attempt, or authorize another payment/close. Lost
+confirmation replies recover the same durable record. Reviewed grant renewal
+requires currently eligible funding, never the closed channel. Authority
+admission, controller admission and service recovery checks reread retired
+history; missing evidence, a changed proof, a lower observed height, or an
+unavailable coordinator blocks further work. Restore fences still refuse all
+execution. Retirement review tokens bind the exact evidence rather than a wall
+clock expiry; every confirmation repeats the checks.
+
+`test_retirement_engine.py` extends all six funded deadline scenarios through
+closed-channel history, real HTLC pruning on restart, separate confirmations,
+controller SIGKILL after retirement, and renewal on new funding. Run the 0096
+acceptance bundle on the packaging VM before treating these additions as funded
+acceptance. Compiled BTC/XBT engines and all prior evidence are retained. This
+milestone produces no installer and does not change installed services.

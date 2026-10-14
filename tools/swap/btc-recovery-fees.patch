@@ -1,0 +1,10 @@
+--- a/bitcoin/tx.c
++++ b/bitcoin/tx.c
+@@ -938,2 +938,5 @@
+-		/* In practice, these predate anchors, so: */
+-		return 1 + 1 + bitcoin_tx_input_sig_weight();
++		/* Include the witness script: compressed pubkey push (34),
++		 * CHECKSIGVERIFY (1), CSV value (up to 3 for leases), CSV (1),
++		 * and script length (1). bitcoin_tx_input_weight adds the
++		 * witness element count. Non-anchor outputs use P2WPKH. */
++		return bitcoin_tx_input_sig_weight() + 1 + 34 + 1 + 3 + 1;

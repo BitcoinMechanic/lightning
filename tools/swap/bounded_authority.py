@@ -23,6 +23,7 @@ PROTECTED_FORMAT = 'swap-bounded-authority-v2'
 KINDS = ('incoming', 'outgoing')
 MAX_RECORDS = 64
 METHODS = frozenset(('getinfo', 'decode', 'listpeerchannels', 'listsendpays', 'listhtlcs',
+                     'listclosedchannels', 'listtransactions', 'listfunds',
                      'sendpay', 'swap-gate-register', 'swap-gate-status',
                      'swap-gate-release', 'swap-gate-fail'))
 HTLC_FIELDS = ('short_channel_id', 'id', 'expiry', 'direction', 'amount_msat', 'payment_hash', 'created_index')
@@ -186,7 +187,8 @@ def validate(record, chain):
                 protection.validate_entry(entry, g)
                 allowed.add('protection')
             if 'closing' in entry:
-                hg.need(entry['closing'] is True and 'protection' in entry and 'terminal' not in entry,
+                hg.need(entry['closing'] is True and 'protection' in entry
+                        and ('terminal' not in entry or 'onchain_retirement' in entry),
                         'closing_evidence_invalid')
                 allowed.add('closing')
             if 'publication' in entry:
@@ -206,9 +208,14 @@ def validate(record, chain):
                 hg.need(d == {'action': 'fail'} or (set(d) == {'action', 'preimage'} and d['action'] == 'release'),
                         'decision_invalid')
                 if d['action'] == 'release': preimage(d['preimage'], data['payment_hash'])
+            if 'onchain_retirement' in entry:
+                import onchain_retirement as retirement
+                retirement.validate(entry, g)
+                allowed.add('onchain_retirement')
             if 'terminal' in entry:
                 outcome = entry['terminal']
-                hg.need((outcome == 'expired' and entry.get('publication') == 'registered'
+                hg.need(('onchain_retirement' in entry and outcome in ('onchain_claimed','onchain_timed_out'))
+                        or (outcome == 'expired' and entry.get('publication') == 'registered'
                          and 'incoming' not in entry and 'decision' not in entry)
                         or (outcome in ('released', 'failed') and entry.get('decision', {}).get('action') ==
                             ('release' if outcome == 'released' else 'fail')), 'terminal_evidence_invalid')
@@ -264,6 +271,10 @@ class Authority:
         reply = self.rpc('listpeerchannels')
         hg.need(type(reply) is dict and type(reply.get('channels')) is list, 'channels_unavailable')
         found = [r for r in reply['channels'] if r.get('channel_id') == pin['channel_id']]
+        if not found and recovery and not admission:
+            import onchain_retirement as retirement
+            retirement.closed_channel(self, pin)
+            return dict(state='CLOSED', htlcs=[])
         hg.need(len(found) == 1 and hg.channel_pin(found[0], self.chain['profile']) == pin, 'approved_channel_changed')
         row = found[0]
         hg.need((row.get('state') == 'CHANNELD_NORMAL' or
@@ -410,6 +421,10 @@ class Authority:
 
     def reconcile(self, eid):
         e, g = self.entry(eid); self.read_node(); p = e['payload']
+        if 'onchain_retirement' in e:
+            import onchain_retirement as retirement
+            retirement.recheck(self, eid)
+            return self.status(eid)
         if g['kind'] == 'outgoing':
             row = self.channel(p['channel'])
             if 'send' not in e:
@@ -459,6 +474,13 @@ class Authority:
                     e['closing'] = True
                 else:
                     hg.need('closing' not in e, 'closing_evidence_regressed')
+                if row['state'] == 'CLOSED':
+                    # Core prunes this channel's HTLC rows on restart. Only the
+                    # already persisted binding/decision can cross that boundary.
+                    hg.need('htlc' in e and 'decision' in e and 'close' in e['protection']
+                            and phase == e['decision']['action']+'_intent', 'closed_history_unresolved')
+                    if not equal(e, self.record['entries'][eid]): self.update(eid, e)
+                    return self.status(eid)
                 h = self.history(b['channel'], p, 'in', p['amount_msat'])
                 hg.need(h is not None and h[0]['id'] == b['htlc_id'] and h[0]['expiry'] == incoming['expiry'],
                         'original_incoming_htlc_missing')
@@ -485,8 +507,11 @@ class Authority:
         decision = dict(action='fail') if payment_preimage is None else dict(action='release', preimage=payment_preimage)
         if payment_preimage is not None: preimage(payment_preimage, e['payload']['payment_hash'])
         hg.need('decision' not in e or equal(e['decision'], decision), 'resolution_changed')
+        if 'onchain_retirement' in e: return self.status(eid)
         if 'decision' not in e:
             e['decision'] = decision; self.update(eid, e)
+        if ba_protected_entry(e, g) and self.channel(e['incoming']['binding']['channel'], recovery=True)['state'] == 'CLOSED':
+            return self.status(eid)
         params = dict(payment_hash=e['payload']['payment_hash'], binding=e['incoming']['binding'])
         if payment_preimage is not None: params['preimage'] = payment_preimage
         result = self.rpc('swap-gate-'+decision['action'], **params)
