@@ -935,8 +935,9 @@ size_t bitcoin_tx_input_witness_weight(enum utxotype utxotype)
 		 * to `1` and witness: <remote_sig>
 		 * Otherwise, this output is a simple P2WPKH to `remotepubkey`.
 		 */
-		/* In practice, these predate anchors, so: */
-		return 1 + 1 + bitcoin_tx_input_sig_weight();
+		/* Include the P2WSH witness script, including the supported lease
+		 * CSV value. bitcoin_tx_input_weight counts the witness elements. */
+		return bitcoin_tx_input_sig_weight() + 1 + 34 + 1 + 3 + 1;
 	case UTXO_P2TR:
 		return 1 + 64;
 	}
