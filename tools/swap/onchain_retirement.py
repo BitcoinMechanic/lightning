@@ -104,17 +104,17 @@ def recheck(a, eid):
     return value, height
 
 
-def summary(value, height, confirmed):
+def summary(value, height, confirmed, chain):
     return dict(confirmation=ba.digest(value),entry_id=value['entry_id'],phase=value['phase'],
         checked_height=height,minimum_confirmations=DEPTH,confirmed=confirmed,
-        read_only=True,regtest_only=True,confirmation_source='paired_cln',independent_chain_proof=False,
+        read_only=True,regtest_only=hg.regtest(chain),confirmation_source='paired_cln',independent_chain_proof=False,
         next_step='Review the original outgoing attempt in the controller before retiring the swap.')
 
 
 def review(a, eid):
     e, _ = a.entry(eid,'incoming')
     value, height = recheck(a,eid) if 'onchain_retirement' in e else snapshot(a,eid)
-    return summary(value,height,'onchain_retirement' in e)
+    return summary(value,height,'onchain_retirement' in e,a.chain)
 
 
 def confirm(a, eid, confirmation, *, confirmed=False):
@@ -127,5 +127,5 @@ def confirm(a, eid, confirmation, *, confirmed=False):
             confirmed_height=height,confirmed_at=int(a.clock()))
         e['terminal'] = OUTCOMES[e['decision']['action']][1]
         validate(e,g); a.update(eid,e)
-    result = summary(value,height,True); result['read_only'] = False
+    result = summary(value,height,True,a.chain); result['read_only'] = False
     return result

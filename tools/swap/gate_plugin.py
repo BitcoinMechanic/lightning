@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static, disposable-regtest CLN plugin for held_gate. No remote authority."""
+"""Static, environment-bound CLN plugin for held_gate. No remote authority."""
 import json
 from pathlib import Path
 import socket
@@ -14,7 +14,7 @@ METHODS = {'swap-gate-register': 'quote', 'swap-gate-status': 'payment_hash',
 
 def manifest():
     return dict(options=[dict(name='swap-gate-profile', type='string',
-                              description='Explicit protocol profile; disposable regtest only')],
+                              description='Explicit BTC/XBT protocol profile')],
                 rpcmethods=[dict(name=name, usage=usage, description='Regtest held HTLC gate')
                             for name, usage in METHODS.items()],
                 subscriptions=[], hooks=[dict(name='htlc_accepted')],
@@ -111,14 +111,14 @@ def main():
                 hg.need(gate is None, 'already_initialized')
                 p = request['params']
                 config = p['configuration']
-                hg.need(config.get('network') == 'regtest' and config.get('startup') is True,
-                        'static_disposable_regtest_required')
                 profile = p['options']['swap-gate-profile']
                 hg.need(profile in (hg.ci.BTC, hg.ci.PRIVKEYIO_XBT), 'profile_refused')
-                journal = hg.Journal(Path(config['lightning-dir'])/'swap-gate-v1')
+                import node_bootstrap
+                root,environment = node_bootstrap.plugin_root(config,profile)
+                journal = hg.Journal(root/'swap-gate-v1')
                 saved = journal.read()
                 chain = saved['chain']
-                hg.need(chain['profile'] == profile, 'profile_changed')
+                hg.need(chain['profile'] == profile and chain['environment']==environment, 'profile_changed')
                 gate = hg.Gate(journal, chain, ReadRPC(config))
                 emit(response(request['id'], {}))
                 continue

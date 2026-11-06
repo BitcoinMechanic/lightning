@@ -222,9 +222,9 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.open_gate()
 
-    def test_mainnet_and_wrong_protocol_features_refused(self):
+    def test_environment_change_and_wrong_protocol_features_refused(self):
         with self.assertRaises(hg.Refused):
-            hg.binding(ci.binding(ci.PRIVKEYIO_XBT,'mainnet',self.chain['node_id']))
+            hg.observe(self.info,ci.binding(ci.PRIVKEYIO_XBT,'mainnet',self.chain['node_id']))
         self.info['our_features']['init'] = ''
         with self.assertRaises(ValueError):
             self.open_gate()

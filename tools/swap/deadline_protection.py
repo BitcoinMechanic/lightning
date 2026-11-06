@@ -84,4 +84,4 @@ def inspect(a, eid):
         rows.get('transactions'), funds.get('outputs'), height, allow_spent=True)
     hg.need(a.read_node(admission=True) == height, 'chain_advanced_retry_inspection')
     return dict(format=FORMAT, entry_id=eid, height=height, **result, read_only=True,
-                confirmation_source='paired_cln', independent_chain_proof=False, regtest_only=True)
+                confirmation_source='paired_cln', independent_chain_proof=False, regtest_only=hg.regtest(a.chain))

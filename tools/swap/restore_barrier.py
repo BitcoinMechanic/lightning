@@ -19,6 +19,8 @@ def blocked(directory):
         paths += [p.parent.parent/MARKER, p.parent.parent/'node-restored.json']
     # Even an invalid file or dangling symlink blocks. Parsing must not turn a
     # damaged restore marker into permission to execute.
+    for parent in p.parents:
+        paths += [parent/MARKER, parent/'node-restored.json']
     return any(os.path.lexists(x) for x in paths)
 
 

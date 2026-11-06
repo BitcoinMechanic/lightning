@@ -1,4 +1,4 @@
-"""Local, finite grant administration for the migrated disposable-regtest node.
+"""Local, finite grant administration for the environment-bound coordinator.
 
 The package adapter supplies the node directory and protocol profile. No SCID,
 RPC method, credential, or endpoint comes from an administration request.
@@ -112,7 +112,7 @@ class Admin:
             limits=copy.deepcopy(g['limits']), expires_at=g['expires_at'],
             confirm_before=min(g['created_at']+REVIEW_SECONDS, g['expires_at']),
             current=self.authority.record['current'][g['kind']] == gid,
-            paused=None if saved is None else saved['paused'], regtest_only=True)
+            paused=None if saved is None else saved['paused'], regtest_only=hg.regtest(self.authority.chain))
         if ba.protected(g):
             result['protection'] = dict(close_before_blocks=g['limits']['close_before_blocks'],
                 scope='The actual incoming channel may be force-closed, including its other payments.',
@@ -160,7 +160,7 @@ class Admin:
         return retirement.confirm(self.authority, entry_id, confirmation, confirmed=confirmed)
 
     def status(self):
-        return dict(read_only=True, regtest_only=True,
+        return dict(read_only=True, regtest_only=hg.regtest(self.authority.chain),
             blocked=self.blocked or restore_barrier.blocked(self.journal.directory)
                 or self.authority.status()['blocked'],
             reviews=[self.summary(gid) for gid in self.record['reviews']],
@@ -187,7 +187,7 @@ def execute(root, chain, rpc, request, *, clock=time.time):
             hg.need(request['confirmed'] is True, 'confirmation_required')
             authority.read_node(admission=True)
             initialize(root/DIRECTORY, chain)
-            return dict(initialized=True, regtest_only=True)
+            return dict(initialized=True, regtest_only=hg.regtest(chain))
         journals.append(hg.Journal(root/DIRECTORY)); admin = Admin(authority, journals[1], clock)
         return getattr(admin, action)(**{k:v for k,v in request.items() if k != 'action'})
     finally:

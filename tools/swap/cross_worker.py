@@ -1,4 +1,4 @@
-"""Durable single-part cross-chain worker, explicit BTC/new-XBT regtest only.
+"""Durable single-part cross-chain worker, explicit BTC/new-XBT environment binding.
 
 The caller supplies authenticated, fixed-endpoint customer RPC adapters. This
 module never accepts raw RPC, chooses routes, reprices or submits a payment
@@ -35,7 +35,7 @@ def evidence(c, kind, value):
     hg.need(e['grant_id'] == gid and ba.equal(e['payload'], c[kind]), 'worker_enrollment_changed')
     state = ba.entry_state(e)
     hg.need(ba.equal(value['status'], dict(kind=kind, state=state, terminal='terminal' in e,
-            regtest_only=True, blocked=False)), 'worker_evidence_status_invalid')
+            regtest_only=hg.regtest(g['chain']), blocked=False)), 'worker_evidence_status_invalid')
     return e
 
 
@@ -64,7 +64,7 @@ def enrolled_admission(c, observations, now):
 def publication(c, value):
     hg.need(type(value) is dict and set(value) == {'format', 'entry_id', 'invoice', 'expires_at'}
             and value['format'] == invoice.FORMAT and value['entry_id'] == enrollment(c, 'incoming')
-            and type(value['invoice']) is str and value['invoice'].startswith('lnbcrt')
+            and ba.ci.invoice_text(value['invoice'],c['incoming']['chain'])
             and 100 <= len(value['invoice']) <= 16384
             and ba.equal(value['expires_at'], c['pay_until']), 'worker_invoice_invalid')
     # The scoped publisher authenticates every signed field with CLN decode.
@@ -259,7 +259,7 @@ class Worker:
         return dict(confirmation=ba.digest(value),contract_id=cid,direction=s['contract']['direction'],
             outcome=value['outcome'],original_attempt_verified=True,
             incoming_retirement_verified=True,confirmed='recovery_retirement' in s,
-            read_only=True,regtest_only=True)
+            read_only=True,regtest_only=hg.regtest(s['contract']['incoming']['chain']))
 
     def recovery_confirm(self, cid, confirmation, confirmed=False):
         self.guard(); hg.need(confirmed is True,'confirmation_required')
@@ -368,4 +368,4 @@ class Worker:
         elif 'approval' in s: state = 'setting_up'
         else: state = 'ready_for_confirmation'
         return dict(format=FORMAT,direction=s['contract']['direction'],state=state,terminal=terminal,
-            blocked=self.blocked or restore_barrier.blocked(self.journal.directory),regtest_only=True)
+            blocked=self.blocked or restore_barrier.blocked(self.journal.directory),regtest_only=hg.regtest(s['contract']['incoming']['chain']))

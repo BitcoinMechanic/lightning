@@ -85,7 +85,7 @@ def unsigned(quote, timestamp, hints):
     hg.need(final <= quote['max_cltv_delta'] and hg.integer(timestamp, 1, quote['expires_at']-1)
             and quote['expires_at']-timestamp <= 3600, 'invoice_timing_invalid')
     text = bolt11.unsigned(quote['payment_hash'], quote['payment_secret'], quote['amount_msat'],
-        profile=quote['chain']['profile'], environment='regtest', timestamp=timestamp,
+        profile=quote['chain']['profile'], environment=quote['chain']['environment'], timestamp=timestamp,
         expiry=quote['expires_at']-timestamp, final_cltv=final)
     hrp, data = text.rsplit('1', 1)
     words = [bolt11.CHARSET.index(c) for c in data][:-110]
@@ -100,7 +100,7 @@ def unsigned(quote, timestamp, hints):
 
 
 def check_decode(decoded, quote, saved):
-    d = ba.ci.invoice(decoded, quote['chain']['profile'], 'regtest')
+    d = ba.ci.invoice(decoded, quote['chain']['profile'], quote['chain']['environment'])
     expected = dict(payment_hash=quote['payment_hash'], payment_secret=quote['payment_secret'],
         amount_msat=quote['amount_msat'], payee=quote['chain']['node_id'], created_at=saved['timestamp'],
         expiry=quote['expires_at']-saved['timestamp'], min_final_cltv_expiry=quote['min_cltv_delta']+24,
@@ -126,8 +126,7 @@ def validate(record, authority):
                 'publisher_entry_invalid')
         hg.need(saved['unsigned'] == unsigned(e['payload'], saved['timestamp'], saved['hints']), 'publication_intent_changed')
         if 'invoice' in saved:
-            hg.need(type(saved['invoice']) is str and saved['invoice'].startswith('lnbcrt')
-                    and len(saved['invoice']) <= 16384, 'customer_invoice_invalid')
+            hg.need(ba.ci.invoice_text(saved['invoice'],authority.chain), 'customer_invoice_invalid')
     return record
 
 

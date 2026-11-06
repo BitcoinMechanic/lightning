@@ -65,7 +65,7 @@ class Packaged(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertNotIn('VOLUME_',p.stdout+p.stderr)
     def test_network_guard_and_restored_state_stay_blocked(self):
         import authority_plugin, chain_identity as ci
-        with self.assertRaisesRegex(ValueError,'static_regtest_required'):
+        with self.assertRaisesRegex(ValueError,'static_network_required'):
             authority_plugin.Service(dict(network='bitcoin',startup=True),ci.BTC)
         path=self.root/'service';self.cmd(self.controller/'package_service.py',['--disposable-regtest',path,'init'])
         saved=(path/'state.json').read_bytes();(self.root/'swap-restored.json').write_text('{}')

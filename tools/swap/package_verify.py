@@ -10,9 +10,12 @@ def verify(directory, role):
     raw = (root/'runtime-manifest.json').read_bytes()
     if len(raw) > 65536: raise ValueError('runtime_manifest_invalid')
     m = json.loads(raw)
-    if (set(m) != {'schema','fixture','role','generation','regtest_only','files'}
-            or m['schema'] != 1 or m['fixture'] != '0098' or m['role'] != role
-            or m['generation'] not in ('a','b') or m['regtest_only'] is not True
+    old = (m.get('schema')==1 and m.get('fixture')=='0098' and m.get('regtest_only') is True
+           and set(m)=={'schema','fixture','role','generation','regtest_only','files'})
+    live = (m.get('schema')==2 and m.get('fixture')=='0102' and m.get('regtest_only') is False
+            and m.get('environments')==['regtest','mainnet']
+            and set(m)=={'schema','fixture','role','generation','regtest_only','files','environments'})
+    if (not (old or live) or m['role']!=role or m['generation'] not in ('a','b')
             or not isinstance(m['files'],dict) or not m['files']):
         raise ValueError('runtime_manifest_invalid')
     present = {p.name for p in root.iterdir()}

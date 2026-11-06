@@ -54,8 +54,12 @@ def scid(value):
 def binding(value):
     ci.same_binding(value, value)
     need(value['profile'] in (ci.BTC, ci.PRIVKEYIO_XBT)
-         and value['environment'] == 'regtest', 'disposable_regtest_required')
+         and value['environment'] in ci.ENVIRONMENTS, 'unsupported_swap_environment')
     return value
+
+
+def regtest(chain):
+    return binding(chain)['environment'] == 'regtest'
 
 
 def observe(info, expected, *, admission=False):
@@ -66,14 +70,14 @@ def observe(info, expected, *, admission=False):
     """
     binding(expected)
     need(type(info) is dict and info.get('network') == expected['network'], 'network_changed')
-    observed = ci.binding(expected['profile'], 'regtest', info.get('id'))
+    observed = ci.binding(expected['profile'], expected['environment'], info.get('id'))
     ci.same_binding(expected, observed)
     need(type(info.get('our_features')) is dict, 'features_missing')
     for place in ('init', 'node', 'invoice'):
         ci._features(info['our_features'].get(place), expected['profile'], place)
     need(integer(info.get('blockheight'), 0, 2**32-1), 'height_invalid')
     if admission:
-        ci.node(info, expected['profile'], 'regtest', expected_id=expected['node_id'])
+        ci.node(info, expected['profile'], expected['environment'], expected_id=expected['node_id'])
     return info['blockheight']
 
 
@@ -260,7 +264,7 @@ class Journal:
 
 
 def initialize_fixture(directory, chain):
-    """Fresh regtest fixture only. Never called by the plugin or on an old dir."""
+    """Initialize an empty journal. Never called on an existing directory or by plugin startup."""
     binding(chain)
     directory = Path(directory)
     need(not restore_barrier.blocked(directory), "restored_gate_blocked")

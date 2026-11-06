@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local fixed-action adapter; disposable regtest only, no raw RPC forwarding."""
+"""Local fixed-action adapter; explicit environment, no raw RPC forwarding."""
 import argparse
 import json
 import os
@@ -13,19 +13,27 @@ import held_gate as hg
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--disposable-regtest', required=True, action='store_true')
+    mode=p.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--disposable-regtest', action='store_true')
+    mode.add_argument('--mainnet', action='store_true')
     p.add_argument('--network-directory', type=Path, required=True)
     p.add_argument('--profile', choices=(admin.ba.ci.BTC, admin.ba.ci.PRIVKEYIO_XBT), required=True)
     args = p.parse_args(); os.umask(0o077)
     raw = sys.stdin.buffer.read(16385)
     hg.need(len(raw) <= 16384, 'admin_request_too_large')
     request = json.loads(raw, object_pairs_hook=hg.unique_object)
-    root = args.network_directory.absolute()
+    network_root = args.network_directory.absolute()
+    import node_bootstrap
+    environment='mainnet' if args.mainnet else 'regtest'
+    root=node_bootstrap.state_root(network_root,environment)
+    if args.mainnet:
+        hg.need(network_root.name=='bitcoin','mainnet_directory_required')
+        node_bootstrap.activation(root,args.profile)
     j = hg.Journal(root/ap.AUTHORITY_DIR)
     try: chain = hg.binding(j.read()['chain'])
     finally: j.close()
-    hg.need(chain['profile'] == args.profile, 'profile_changed')
-    rpc = ap.RPC({'lightning-dir':str(root), 'rpc-file':'lightning-rpc'})
+    hg.need(chain['profile'] == args.profile and chain['environment']==environment, 'profile_changed')
+    rpc = ap.RPC({'lightning-dir':str(network_root), 'rpc-file':'lightning-rpc'})
     print(json.dumps(admin.execute(root, chain, rpc, request)))
 
 

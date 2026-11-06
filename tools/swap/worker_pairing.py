@@ -102,7 +102,7 @@ class Pairing:
     def status(self):
         return dict(format=FORMAT,paired=self.record['binding'] is not None,
             blocked=self.blocked or restore_barrier.blocked(self.journal.directory),
-            read_only=True,regtest_only=True)
+            read_only=True,regtest_only=self.record['binding'] is None or hg.regtest(self.record['binding']['nodes']['incoming']['grant']['chain']))
 
 
 class BoundWorker(cw.Worker):

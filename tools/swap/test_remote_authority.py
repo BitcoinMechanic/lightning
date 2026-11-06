@@ -199,7 +199,7 @@ class Tests(unittest.TestCase):
 
     def test_plugin_static_guard_and_rpc_allowlist(self):
         for config in (dict(network='bitcoin', startup=True), dict(network='regtest', startup=False)):
-            with self.assertRaisesRegex(ValueError, 'static_regtest_required'):
+            with self.assertRaisesRegex(ValueError, 'static_network_required'):
                 plugin.Service(config, ba.ci.BTC)
         rpc = plugin.RPC(dict(**{'rpc-file':'lightning-rpc', 'lightning-dir':str(self.root)}))
         for method in ('close', 'pay', 'xpay', 'sendonion', 'blacklistrune', 'getroutes'):

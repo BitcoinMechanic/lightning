@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import sys
 
-ROOTS = {'node': ('package_gate','package_customer','package_admin'),
+ROOTS = {'node': ('package_gate','package_customer','package_admin','package_node'),
          'controller': ('package_service',)}
 
 
@@ -36,12 +36,14 @@ def closure(roots, sources):
     return selected
 
 
-def stage(swap, controller, destination, role, generation):
+def stage(swap, controller, destination, role, generation, *, live=False):
     if role not in ROOTS or generation not in ('a','b'): raise ValueError('runtime_role_invalid')
     destination = Path(destination)
     destination.mkdir()  # Never replace an existing runtime.
     files = closure(ROOTS[role], [Path(swap),Path(controller)])
     manifest = dict(schema=1,fixture='0098',role=role,generation=generation,regtest_only=True,files={})
+    if live:
+        manifest.update(schema=2,fixture='0102',regtest_only=False,environments=['regtest','mainnet'])
     for name, source in sorted(files.items()):
         target=destination/(name+'.py'); shutil.copyfile(source,target); target.chmod(0o755 if name in ROOTS[role] else 0o644)
         manifest['files'][target.name]=hashlib.sha256(target.read_bytes()).hexdigest()
@@ -54,4 +56,5 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('swap','controller','destination'):p.add_argument(key,type=Path)
     p.add_argument('role',choices=ROOTS);p.add_argument('generation',choices=('a','b'))
-    a=p.parse_args();stage(a.swap,a.controller,a.destination,a.role,a.generation)
+    p.add_argument('--live',action='store_true')
+    a=p.parse_args();stage(a.swap,a.controller,a.destination,a.role,a.generation,live=a.live)

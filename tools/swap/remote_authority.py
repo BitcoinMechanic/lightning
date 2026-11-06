@@ -176,7 +176,7 @@ class Remote:
             own = [e for e in a.record['entries'].values() if e['grant_id'] == gid]
             return dict(format=self.format_name, grant=copy.deepcopy(g), paused=a.record['grants'][gid]['paused'],
                 current=a.record['current'][g['kind']] == gid, remaining=g['limits']['max_swaps']-len(own),
-                reserved_msat=sum(ba.payload(e['payload'], g) for e in own), regtest_only=True)
+                reserved_msat=sum(ba.payload(e['payload'], g) for e in own), regtest_only=hg.regtest(g['chain']))
         if op == 'enroll':
             hg.need(set(body) == {'data', 'confirmation'} and type(body['confirmation']) is str
                     and body['confirmation'] == ba.digest(body['data']), 'confirmation_required')

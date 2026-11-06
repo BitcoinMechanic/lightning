@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regtest customer facade. Fresh journals; no StartOS activation."""
+"""Static customer facade for explicitly initialized coordinator journals."""
 from pathlib import Path
 import sys
 import time
@@ -18,7 +18,7 @@ INVOICE_DIR = 'customer-invoices-v1'
 def manifest():
     result = plugin.manifest()
     result['rpcmethods'] = [
-        dict(name=remote.CALL, usage='grant_id operation body', description='Scoped regtest customer contract operations'),
+        dict(name=remote.CALL, usage='grant_id operation body', description='Scoped customer contract operations'),
         dict(name=remote.CREDENTIAL, usage='grant_id confirmed', description='Local customer credential setup')]
     return result
 
@@ -68,6 +68,7 @@ class Service(plugin.Service):
             for name in (plugin.AUTHORITY_DIR, REMOTE_DIR, INVOICE_DIR):
                 journals.append(hg.Journal(self.root/name))
             chain = hg.binding(journals[0].read()['chain'])
+            hg.need(chain['environment']==self.environment, 'environment_changed')
             if profile is not None: hg.need(chain['profile'] == profile, 'profile_changed')
             else: ba.ci.same_binding(chain, self.chain)
             a = ba.Authority(journals[0], chain, self.rpc, self.clock)

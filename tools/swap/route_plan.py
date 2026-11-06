@@ -1,4 +1,4 @@
-"""Protocol-bound read-only route adapter. Disposable regtest only.
+"""Protocol-bound read-only route adapter. Explicit environment and protocol binding.
 
 A plan is data, never a grant. No payment, layer, credential or journal writes.
 The future coordinator must revalidate the invoice/channel, reserve authority
@@ -165,7 +165,7 @@ def validate_plan(plan):
          'plan_fields_invalid')
     need(type(plan['schema']) is int and plan['schema'] == 1 and plan['format'] == FORMAT, 'plan_format_invalid')
     binding(plan['chain']); limits(plan['limits'])
-    need(type(plan['invoice']) is str and plan['invoice'].startswith('lnbcrt') and len(plan['invoice']) <= 16384,
+    need(ci.invoice_text(plan['invoice'],plan['chain']),
          'plan_invoice_invalid')
     need(ci.hex_field(plan['payment_hash'], 64) and ci.hex_field(plan['payment_secret'], 64)
          and integer(plan['amount_msat'], 1, 1000000000)
@@ -186,9 +186,9 @@ def digest(plan):
 
 def plan(rpc, chain, invoice, approved_channels, bounds, *, clock=time.time):
     binding(chain); limits(bounds)
-    need(type(invoice) is str and invoice.startswith('lnbcrt') and len(invoice) <= 16384, 'recipient_invoice_invalid')
-    ci.same_binding(chain, ci.node(rpc('getinfo'), chain['profile'], 'regtest'))
-    decoded = ci.invoice(rpc('decode', string=invoice), chain['profile'], 'regtest')
+    need(ci.invoice_text(invoice,chain), 'recipient_invoice_invalid')
+    ci.same_binding(chain, ci.node(rpc('getinfo'), chain['profile'], chain['environment']))
+    decoded = ci.invoice(rpc('decode', string=invoice), chain['profile'], chain['environment'])
     now = int(clock())
     need(integer(decoded.get('created_at'), 1, now) and integer(decoded.get('expiry'), 1, 2**35-1)
          and now+120 <= decoded['created_at']+decoded['expiry'] < 2**35,
@@ -234,7 +234,7 @@ def observe_attempt(rpc, saved_plan, original=None):
     """
     validate_plan(saved_plan)
     chain = saved_plan['chain']
-    ci.same_binding(chain, ci.node(rpc('getinfo'), chain['profile'], 'regtest'))
+    ci.same_binding(chain, ci.node(rpc('getinfo'), chain['profile'], chain['environment']))
     reply = rpc('listsendpays', payment_hash=saved_plan['payment_hash'])
     need(type(reply) is dict and type(reply.get('payments')) is list, 'attempts_unavailable')
     rows = reply['payments']

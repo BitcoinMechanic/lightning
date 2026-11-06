@@ -28,6 +28,7 @@ def grant_pair(grants, direction):
     for kind, profile in zip(('incoming', 'outgoing'), profiles):
         g = grants[kind]; ba.grant(g, hg.binding(g['chain']))
         hg.need(g['kind'] == kind and g['chain']['profile'] == profile, 'contract_chain_or_kind_changed')
+    hg.need(grants['incoming']['chain']['environment'] == grants['outgoing']['chain']['environment'], 'contract_environment_changed')
     hg.need(grants['incoming']['chain']['node_id'] != grants['outgoing']['chain']['node_id'], 'contract_nodes_not_distinct')
 
 
@@ -91,7 +92,7 @@ def inspection(c, kind, observed, now, *, entry_id=None):
     info = observed['info']
     hg.need(type(info) is dict and set(info) == {'format', 'grant', 'paused', 'current', 'remaining', 'reserved_msat', 'regtest_only'}
             and info['format'] == remote.FORMAT and ba.equal(info['grant'], g)
-            and info['paused'] is False and info['current'] is True and info['regtest_only'] is True
+            and info['paused'] is False and info['current'] is True and info['regtest_only'] is hg.regtest(g['chain'])
             and hg.integer(info['remaining'], 0, g['limits']['max_swaps'])
             and hg.integer(info['reserved_msat'], 0, g['limits']['total_amount_msat']), 'contract_grant_changed')
     if entry_id is not None:
@@ -137,7 +138,7 @@ def held_margin(c, evidence, *, incoming_height):
     hg.need(ba.equal(e['payload'], quote) and e['grant_id'] == gid and 'incoming' in e
             and 'decision' not in e and 'terminal' not in e and 'closing' not in e
             and 'close' not in e.get('protection', {}) and evidence['status'] ==
-                dict(kind='incoming', state='held', terminal=False, regtest_only=True, blocked=False),
+                dict(kind='incoming', state='held', terminal=False, regtest_only=hg.regtest(g['chain']), blocked=False),
             'contract_incoming_not_held')
     hg.need(hg.integer(incoming_height, 0, 2**32-1) and quote['min_cltv_delta'] <=
             e['incoming']['expiry']-incoming_height <= quote['max_cltv_delta'], 'contract_held_margin_insufficient')
@@ -151,4 +152,4 @@ def review(c):
         routing_fee_msat=c['pricing']['routing_fee_msat'], markup_bps=c['pricing']['markup_bps'],
         expires_at=c['pay_until'], outgoing_hops=len(c['outgoing']['route']),
         outgoing_delay_blocks=c['outgoing']['route'][0]['delay'],
-        incoming_channel='Detected when payment arrives', regtest_only=True)
+        incoming_channel='Detected when payment arrives', regtest_only=hg.regtest(c['incoming']['chain']))

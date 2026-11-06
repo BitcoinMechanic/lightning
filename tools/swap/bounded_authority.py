@@ -1,4 +1,4 @@
-"""Versioned local authority for one-part payments. Disposable regtest only.
+"""Versioned local authority for one-part payments. Explicit environment and protocol binding.
 
 No RPC passthrough, remote credential, price policy or cross-chain worker. An
 operator grants finite local risk; an enrolled outgoing payment still needs a
@@ -310,7 +310,7 @@ class Authority:
                     'payment_hash_already_used')
 
     def invoice(self, data):
-        d = ci.invoice(self.rpc('decode', string=data['invoice']), self.chain['profile'], 'regtest')
+        d = ci.invoice(self.rpc('decode', string=data['invoice']), self.chain['profile'], self.chain['environment'])
         expected = dict(payment_hash=data['payment_hash'], payment_secret=data['payment_secret'],
                         payee=data['recipient'], amount_msat=data['amount_msat'])
         now = int(self.clock())
@@ -531,12 +531,12 @@ class Authority:
         # Local cached status contains no hash, invoice, secret, preimage or RPC.
         restored = restore_barrier.blocked(self.journal.directory)
         if eid is None:
-            return dict(format=FORMAT, regtest_only=True, blocked=self.blocked or restored,
+            return dict(format=FORMAT, regtest_only=hg.regtest(self.chain), blocked=self.blocked or restored,
                         grants=len(self.record['grants']), enrollments=len(self.record['entries']))
         hg.need(type(eid) is str and eid in self.record['entries'], 'unknown_enrollment')
         e = self.record['entries'][eid]; kind = self.record['grants'][e['grant_id']]['terms']['kind']
         state = entry_state(e)
-        return dict(kind=kind, state=state, terminal='terminal' in e, regtest_only=True,
+        return dict(kind=kind, state=state, terminal='terminal' in e, regtest_only=hg.regtest(self.chain),
                     blocked=self.blocked or restored)
 
 

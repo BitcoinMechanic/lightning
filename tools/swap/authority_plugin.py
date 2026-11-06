@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regtest RPC facade; authentication belongs to CLN's rune transport."""
+"""Static environment-bound RPC facade; authentication belongs to CLN's rune transport."""
 import json
 from pathlib import Path
 import socket
@@ -18,8 +18,8 @@ REMOTE_DIR = 'remote-authority-v1'
 
 def manifest():
     return dict(options=[dict(name='swap-authority-profile', type='string',
-                              description='Explicit protocol; disposable regtest only')],
-        rpcmethods=[dict(name=remote.CALL, usage='grant_id operation body', description='Scoped regtest authority'),
+                              description='Explicit BTC/XBT protocol')],
+        rpcmethods=[dict(name=remote.CALL, usage='grant_id operation body', description='Scoped coordinator authority'),
                     dict(name=remote.CREDENTIAL, usage='grant_id confirmed', description='Local credential setup')],
         subscriptions=[], hooks=[], dynamic=False, nonnumericids=True)
 
@@ -55,9 +55,9 @@ class RPC:
 
 class Service:
     def __init__(self, configuration, profile, rpc_factory=RPC, clock=time.time):
-        hg.need(configuration.get('network') == 'regtest' and configuration.get('startup') is True
-                and profile in (ba.ci.BTC, ba.ci.PRIVKEYIO_XBT), 'static_regtest_required')
-        self.root = Path(configuration['lightning-dir'])
+        import node_bootstrap
+        hg.need(profile in (ba.ci.BTC, ba.ci.PRIVKEYIO_XBT), 'profile_refused')
+        self.root,self.environment = node_bootstrap.plugin_root(configuration,profile)
         self.rpc = rpc_factory(configuration)
         self.clock = clock
         self.chain = self.invoke(None, None, profile)
@@ -69,6 +69,7 @@ class Service:
         other = None
         try:
             chain = hg.binding(journal.read()['chain'])
+            hg.need(chain['environment']==self.environment, 'environment_changed')
             if profile is not None: hg.need(chain['profile'] == profile, 'profile_changed')
             else: ba.ci.same_binding(chain, self.chain)
             authority = ba.Authority(journal, chain, self.rpc, self.clock)

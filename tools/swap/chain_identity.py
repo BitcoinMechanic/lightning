@@ -151,3 +151,12 @@ def mainnet_xbt_backend(chain, deployments, checkpoint):
     require(deployment.get('active') is True and type(deployment.get('height')) is int
             and deployment['height'] == ACTIVATION_HEIGHT and checkpoint == ACTIVATION_HASH,
             'wrong_xbt_backend')
+
+
+def invoice_text(value, chain):
+    """Cheap pre-decode HRP boundary. Signature and bit 512 checks remain mandatory."""
+    same_binding(chain,chain)
+    if type(value) is not str or not 1 <= len(value) <= 16384:return False
+    currency=wire(chain['profile'],chain['environment'])[1]
+    if chain['environment']=='regtest':return value.startswith('ln'+currency)
+    return re.fullmatch(r'ln'+currency+r'[0-9]+[munp]?1[023456789acdefghjklmnpqrstuvwxyz]+',value) is not None

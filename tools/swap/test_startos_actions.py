@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0100: compiled StartOS SDK action handlers around the accepted 0098 runtimes.
+"""0102: compiled regression SDK handlers around the new sealed runtimes.
 
 The OS effects boundary is supplied by a disposable subprocess adapter. This
 does not claim StartOS host installation, lifecycle or mainnet acceptance.
@@ -81,8 +81,8 @@ class Client(base.Client):
 original_scenario=base.scenario
 def scenario(lab,topologies,direction,name):
     r=original_scenario(lab,topologies,direction,name)
-    receipt=dict(schema=1,fixture='startos-sdk-actions-0100',startos_host_acceptance=False,regtest_only=True,
-        actual_sdk_forms=True,compiled_handlers=True,unchanged_runtime=True,closed_channels=0,installer=False,
+    receipt=dict(schema=1,fixture='startos-sdk-actions-0102',startos_host_acceptance=False,regtest_only=True,
+        actual_sdk_forms=True,compiled_handlers=True,unchanged_runtime=False,closed_channels=0,installer=False,
         counts=copy.deepcopy(COUNTS))
     (lab.root/'action-result.json').write_text(json.dumps(receipt,indent=2)+'\n')
     return r

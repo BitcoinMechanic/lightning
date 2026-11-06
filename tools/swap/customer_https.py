@@ -69,7 +69,7 @@ def context(pem):
 def info(value, grant):
     hg.need(type(value) is dict and set(value) == {'format','grant','paused','current','remaining','reserved_msat','regtest_only'}
         and value['format'] == remote.FORMAT and ba.equal(value['grant'],grant)
-        and type(value['paused']) is bool and type(value['current']) is bool and value['regtest_only'] is True
+        and type(value['paused']) is bool and type(value['current']) is bool and value['regtest_only'] is hg.regtest(grant['chain'])
         and hg.integer(value['remaining'],0,grant['limits']['max_swaps'])
         and hg.integer(value['reserved_msat'],0,grant['limits']['total_amount_msat']), 'https_grant_or_identity_changed')
     return value
