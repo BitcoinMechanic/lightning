@@ -46,5 +46,20 @@ def unpaid(lab):
   for backend,_,_ in topologies.values():lab.stop(backend['proc'])
  (lab.root/'unpaid-result.json').write_text(json.dumps(receipts,indent=2)+'\n')
  print('UNPAID EXPIRY FIXTURE PASSED',flush=True)
+def long_quotes(lab):
+ topologies={label:ce.customer.topology(lab,label,profile,grant_amount_msat=10000000) for label,profile in [('btc',ci.BTC),('xbt',ci.PRIVKEYIO_XBT)]}
+ def contract(incoming,outgoing,bolt,direction):
+  c=ce.contract(incoming,outgoing,bolt,direction)
+  q=dict(c['pricing'],schema=2,expires_at=c['pricing']['fetched_at_ms']//1000+600)
+  return ce.cc.create(c['grants'],c['outgoing'],q,now=int(time.time()))
+ receipts=[]
+ for direction in ('forward','reverse'):
+  receipts.append(ce.scenario(lab,topologies,direction,'release-v2',contract_factory=contract))
+ for backend,nodes,_ in topologies.values():
+  for node in reversed(nodes):lab.stop(node['proc'])
+  lab.stop(backend['proc'])
+ (lab.root/'long-quote-result.json').write_text(json.dumps(receipts,indent=2)+'\n')
+ print('TEN-MINUTE QUOTE FUNDED FIXTURE PASSED',flush=True)
+if os.environ.get('LONG_QUOTES')=='1':ce.run=long_quotes
 if os.environ.get('EXPIRY_ONLY')=='1':ce.run=unpaid
 ce.main()
