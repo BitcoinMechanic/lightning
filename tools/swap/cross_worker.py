@@ -314,7 +314,7 @@ class Worker:
                 r = s['decision']['resolution']; body = dict(entry_id=enrollment(c,'incoming'))
                 if r['action'] == 'release': body['preimage'] = r['preimage']
                 self.rpc(s,'incoming',r['action'],body)
-            elif 'send' not in s and 'terminal' not in out and int(self.clock()) >= c['outgoing']['expires_at']:
+            elif 'send' not in s and 'terminal' not in out:
                 self.retire(cid,s)
         elif 'send' in s:
             if out.get('terminal') in ('complete','failed'):
@@ -334,7 +334,7 @@ class Worker:
                     outgoing=copy.deepcopy(s['remote']['outgoing']),observations=reports)
                 self.commit(cid,s)
                 self.rpc(s,'outgoing','send',dict(entry_id=enrollment(c,'outgoing')))
-        elif inc.get('terminal') == 'expired' and 'terminal' not in out and int(self.clock()) >= c['outgoing']['expires_at']:
+        elif inc.get('terminal') == 'expired' and 'terminal' not in out:
             self.retire(cid,s)
         return self.status(cid)
 

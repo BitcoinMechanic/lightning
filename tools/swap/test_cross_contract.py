@@ -35,6 +35,15 @@ def example(direction='forward', markup=0):
 
 
 class Tests(unittest.TestCase):
+    def test_quote_versions_preserve_old_deadlines_and_bound_new_window(self):
+        c, _ = example()
+        q = dict(c['pricing'])
+        self.assertEqual(market.quote(q)['expires_at'], NOW+120)
+        q.update(schema=2, expires_at=NOW+600)
+        self.assertEqual(market.quote(q)['expires_at'], NOW+600)
+        for schema, expiry in ((1,NOW+600),(2,NOW+120),(2,NOW+601),(3,NOW+600),(True,NOW+120)):
+            with self.assertRaises(ValueError): market.quote(dict(q,schema=schema,expires_at=expiry))
+
     def test_both_directions_price_fee_markup_and_independent_heights(self):
         for direction in ('forward','reverse'):
             c,obs = example(direction)

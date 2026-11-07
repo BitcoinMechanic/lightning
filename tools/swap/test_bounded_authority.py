@@ -253,6 +253,17 @@ class AuthorityTests(unittest.TestCase):
         self.auth.retire(eid2, confirmed=True)
         with self.assertRaisesRegex(ValueError, 'enrollment_terminal'): self.auth.send(eid2)
 
+    def test_live_invoice_unsent_retirement_is_durable_and_does_not_refund(self):
+        gid, eid, data = self.enroll()
+        self.assertLess(self.now, data['expires_at'])
+        self.auth.retire(eid, confirmed=True)
+        self.open()
+        self.assertEqual(self.auth.status(eid)['state'], 'retired')
+        with self.assertRaisesRegex(ValueError, 'enrollment_terminal'): self.auth.send(eid)
+        self.assertIn(eid, self.auth.record['entries'])
+        self.assertFalse(any(method == 'sendpay' for method, _ in self.node.calls))
+        self.auth.retire(eid, confirmed=True)
+
     def test_restore_marker_all_operations_blocked_and_status_redacted(self):
         gid, eid, data = self.enroll(); self.auth.send(eid)
         (self.path/'restored.json').write_text('{}')

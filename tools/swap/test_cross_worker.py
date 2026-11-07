@@ -264,12 +264,12 @@ class Tests(unittest.TestCase):
         self.now = self.remote.c['outgoing']['expires_at']; self.finish()
         self.assertEqual(self.w.status(self.cid)['state'],'failed')
 
-    def test_unpaid_expiry_retires_only_after_recipient_expiry(self):
+    def test_unpaid_expiry_retires_without_waiting_for_recipient_expiry(self):
         self.setup_swap(); self.remote.entries['incoming']['terminal'] = 'expired'
         self.now = self.remote.c['pay_until']; self.w.step(self.cid)
         self.assertEqual(self.w.status(self.cid)['state'],'waiting_for_retirement')
-        self.assertFalse(any(op=='retire' for _,op,_ in self.remote.calls))
-        self.now = self.remote.c['outgoing']['expires_at']; self.finish()
+        self.assertTrue(any(op=='retire' for _,op,_ in self.remote.calls))
+        self.assertLess(self.now, self.remote.c['outgoing']['expires_at']); self.finish()
         self.assertEqual(self.w.status(self.cid)['state'],'expired'); self.assertEqual(self.sends(),0)
 
     def test_storage_uncertainty_before_send_prevents_send_and_freezes_instance(self):

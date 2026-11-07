@@ -25,11 +25,11 @@ def ceil(v): return -(-v.numerator // v.denominator)
 def quote(q, *, compute=False, details=False):
     require(type(q) is dict and set(q)=={'schema','source','pair','direction','markup_bps','fetched_at_ms','ticker_at_ms',
         'expires_at','bid','ask','levels','recipient_msat','routing_fee_msat','btc_msat','xbt_msat'})
-    require(q['schema']==1 and type(q['schema']) is int and q['source']=='neoxa.exchange' and q['pair']=='BTCB2_BTC')
+    require(q['schema'] in (1,2) and type(q['schema']) is int and q['source']=='neoxa.exchange' and q['pair']=='BTCB2_BTC')
     require(q['direction'] in ('forward','reverse') and integer(q['markup_bps'],0,500))
     require(integer(q['fetched_at_ms'],0,2**53-1) and integer(q['ticker_at_ms'],0,q['fetched_at_ms'])
         and q['fetched_at_ms']-q['ticker_at_ms']<=30000)
-    require(type(q['expires_at']) is int and q['expires_at']==q['fetched_at_ms']//1000+120)
+    require(type(q['expires_at']) is int and q['expires_at']==q['fetched_at_ms']//1000+(120 if q['schema']==1 else 600))
     require(integer(q['recipient_msat'],1000,CAPS['xbt' if q['direction']=='forward' else 'btc']) and q['recipient_msat']%1000==0)
     require(integer(q['routing_fee_msat'],0,10000))
     bid,ask=number(q['bid']),number(q['ask'])

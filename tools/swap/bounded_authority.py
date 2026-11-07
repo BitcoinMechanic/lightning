@@ -521,7 +521,11 @@ class Authority:
     def retire(self, eid, *, confirmed=False):
         hg.need(confirmed is True, 'confirmation_required')
         e, g = self.entry(eid, 'outgoing'); self.read_node()
-        hg.need('send' not in e and int(self.clock()) >= e['payload']['expires_at'], 'retirement_refused')
+        # Retirement revokes this enrollment under the authority journal lock.
+        # A prior send intent (including an uncertain outcome) always refuses.
+        # Once terminal is durable, send() cannot dispatch it, even if the
+        # recipient invoice is still valid. Never refund the grant budget.
+        hg.need('send' not in e, 'retirement_refused')
         self.unused(e['payload'], g['channels'])
         for pin in g['channels']: self.channel(pin)
         e['terminal'] = 'retired'; self.update(eid, e)
