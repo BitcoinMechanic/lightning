@@ -916,6 +916,11 @@ static void handle_gossip_in(struct peer *peer, const u8 *msg)
 {
 	u8 *gmsg;
 
+	/* Even discarded gossip must make progress: read_body_from_peer_done
+	 * waits on peer_in after local handling, and the writer wakes it.
+	 * Otherwise an early return here strands subsequent pongs and HTLCs. */
+	io_wake(peer->peer_outq);
+
 	/* We warn at 250000, drop at 500000 */
 	if (daemon_conn_queue_length(peer->daemon->gossipd) > 500000)
 		return;
